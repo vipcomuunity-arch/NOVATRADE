@@ -10,12 +10,7 @@ import {
   Legend,
   Filler
 } from 'chart.js';
-
-// Импорт модульных компонентов
-import Header from './components/Header';
-import AssetSelector from './components/AssetSelector';
-import ChartView from './components/Chart';
-import TradingPanel from './components/TradingPanel';
+import { Line } from 'react-chartjs-2';
 
 // Регистрация модулей Chart.js
 ChartJS.register(
@@ -37,6 +32,136 @@ export const ASSETS = [
   { id: 'aapl', name: 'Apple Inc.', price: 214.2, category: 'Stocks', payout: 75 }
 ];
 
+// --- 1. КОМПОНЕНТ HEADER С ПРОФИЛЕМ ---
+const Header = ({ balance }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', backgroundColor: '#1E293B', borderBottom: '1px solid #334155' }}>
+    <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#10B981' }}>TradeX</div>
+    
+    {/* Блок профиля */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+      <div style={{ backgroundColor: '#0F172A', padding: '8px 15px', borderRadius: '8px', fontSize: '18px', fontWeight: 'bold', color: '#F8FAFC' }}>
+        ${balance.toFixed(2)}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: '14px', fontWeight: 'bold' }}>Иван Иванов</div>
+          <div style={{ fontSize: '12px', color: '#94A3B8' }}>Профиль</div>
+        </div>
+        <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#3B82F6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', fontWeight: 'bold' }}>
+          ИИ
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+// --- 2. КОМПОНЕНТ ВЫБОРА АКТИВА ---
+const AssetSelector = ({ assets, selectedAsset, setSelectedAsset }) => (
+  <div style={{ display: 'flex', gap: '10px', overflowX: 'auto', paddingBottom: '10px' }}>
+    {assets.map(asset => (
+      <button
+        key={asset.id}
+        onClick={() => setSelectedAsset(asset)}
+        style={{
+          padding: '10px 20px',
+          backgroundColor: selectedAsset.id === asset.id ? '#3B82F6' : '#1E293B',
+          color: '#FFF',
+          border: 'none',
+          borderRadius: '8px',
+          cursor: 'pointer',
+          fontWeight: 'bold',
+          whiteSpace: 'nowrap'
+        }}
+      >
+        {asset.name} ({asset.payout}%)
+      </button>
+    ))}
+  </div>
+);
+
+// --- 3. КОМПОНЕНТ ГРАФИКА ---
+const ChartView = ({ selectedAsset, currentPrice, isUp, chartData, chartOptions }) => (
+  <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '20px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
+      <h2 style={{ margin: 0 }}>{selectedAsset.name}</h2>
+      <div style={{ fontSize: '24px', fontWeight: 'bold', color: isUp ? '#10B981' : '#EF4444' }}>
+        {currentPrice.toFixed(selectedAsset.category === 'Forex' ? 4 : 2)}
+      </div>
+    </div>
+    <div style={{ flex: 1, minHeight: '300px' }}>
+      <Line data={chartData} options={chartOptions} />
+    </div>
+  </div>
+);
+
+// --- 4. КОМПОНЕНТ ПАНЕЛИ ТОРГОВЛИ ---
+const TradingPanel = ({ selectedAsset, amount, setAmount, duration, setDuration, handleTrade, activeTrades }) => (
+  <div style={{ backgroundColor: '#1E293B', padding: '20px', borderLeft: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <h3>Новая сделка</h3>
+    
+    <div>
+      <label style={{ display: 'block', marginBottom: '5px', color: '#94A3B8' }}>Сумма ($)</label>
+      <input 
+        type="number" 
+        value={amount} 
+        onChange={(e) => setAmount(Number(e.target.value))}
+        style={{ width: '100%', padding: '10px', backgroundColor: '#0F172A', border: '1px solid #334155', color: '#FFF', borderRadius: '6px' }}
+      />
+    </div>
+
+    <div>
+      <label style={{ display: 'block', marginBottom: '5px', color: '#94A3B8' }}>Время</label>
+      <select 
+        value={duration} 
+        onChange={(e) => setDuration(e.target.value)}
+        style={{ width: '100%', padding: '10px', backgroundColor: '#0F172A', border: '1px solid #334155', color: '#FFF', borderRadius: '6px' }}
+      >
+        <option value="01:00">1 Минута</option>
+        <option value="05:00">5 Минут</option>
+        <option value="15:00">15 Минут</option>
+      </select>
+    </div>
+
+    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#94A3B8', fontSize: '14px' }}>
+      <span>Доходность ({selectedAsset.payout}%):</span>
+      <span style={{ color: '#10B981', fontWeight: 'bold' }}>
+        +${(amount * (selectedAsset.payout / 100)).toFixed(2)}
+      </span>
+    </div>
+
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '10px' }}>
+      <button 
+        onClick={() => handleTrade('UP')}
+        style={{ padding: '15px', backgroundColor: '#10B981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}>
+        ВЫШЕ ↗
+      </button>
+      <button 
+        onClick={() => handleTrade('DOWN')}
+        style={{ padding: '15px', backgroundColor: '#EF4444', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}>
+        НИЖЕ ↘
+      </button>
+    </div>
+
+    {/* Список активных сделок */}
+    <div style={{ marginTop: '20px', flex: 1, overflowY: 'auto' }}>
+      <h4 style={{ color: '#94A3B8' }}>Активные сделки ({activeTrades.length})</h4>
+      {activeTrades.map(trade => (
+        <div key={trade.id} style={{ backgroundColor: '#0F172A', padding: '10px', borderRadius: '6px', marginBottom: '10px', fontSize: '14px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
+            <span>{trade.asset}</span>
+            <span style={{ color: trade.type === 'UP' ? '#10B981' : '#EF4444' }}>{trade.type}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', color: '#94A3B8' }}>
+            <span>${trade.amount}</span>
+            <span>{trade.time}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+// --- ГЛАВНЫЙ КОМПОНЕНТ ПРИЛОЖЕНИЯ ---
 export default function App() {
   const [selectedAsset, setSelectedAsset] = useState(ASSETS[0]);
   const [balance, setBalance] = useState(10000.0);
@@ -44,7 +169,6 @@ export default function App() {
   const [duration, setDuration] = useState('01:00');
   const [priceHistory, setPriceHistory] = useState([]);
   const [timeLabels, setTimeLabels] = useState([]);
-  const [isAssetMenuOpen, setIsAssetMenuOpen] = useState(false);
   const [activeTrades, setActiveTrades] = useState([]);
 
   // Инициализация и симуляция изменения цен в реальном времени
@@ -94,7 +218,7 @@ export default function App() {
     const newTrade = {
       id: Date.now(),
       asset: selectedAsset.name,
-      type, // 'UP' или 'DOWN'
+      type,
       entryPrice: currentPrice,
       amount,
       payout: amount + (amount * (selectedAsset.payout / 100)),
@@ -151,22 +275,20 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0F172A', color: '#F8FAFC', fontFamily: 'sans-serif' }}>
-      {/* Шапка */}
+      
+      {/* Шапка с профилем */}
       <Header balance={balance} />
 
       {/* Основной контент */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', height: 'calc(100vh - 65px)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', height: 'calc(100vh - 75px)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', padding: '20px', gap: '20px' }}>
-          {/* Селектор активов */}
+          
           <AssetSelector
             assets={ASSETS}
             selectedAsset={selectedAsset}
             setSelectedAsset={setSelectedAsset}
-            isAssetMenuOpen={isAssetMenuOpen}
-            setIsAssetMenuOpen={setIsAssetMenuOpen}
           />
 
-          {/* График */}
           <ChartView
             selectedAsset={selectedAsset}
             currentPrice={currentPrice}
@@ -176,7 +298,6 @@ export default function App() {
           />
         </div>
 
-        {/* Панель торговли */}
         <TradingPanel
           selectedAsset={selectedAsset}
           amount={amount}
