@@ -1,1 +1,373 @@
+/**
+ * frontend/styles/chart.css
+ * 
+ * Стили для торгового графика, индикаторов, маркеров сделок и таймфреймов.
+ * Совместимо с TradingView Lightweight Charts и кастомными Canvas/SVGOverlay.
+ */
 
+/* ==========================================
+   1. КОНТЕЙНЕР И СЕТКА ГРАФИКА
+   ========================================== */
+.chart-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 450px;
+  background-color: var(--bg-surface, #131722);
+  border: 1px solid var(--border-color, #2a2e39);
+  border-radius: var(--radius-lg, 12px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+
+.chart-wrapper {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+}
+
+.chart-canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* ==========================================
+   2. ВЕРХНЯЯ ПАНЕЛЬ ИНСТРУМЕНТОВ (CHART TOOLBAR)
+   ========================================== */
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background-color: var(--bg-card, #181c27);
+  border-bottom: 1px solid var(--border-color, #2a2e39);
+  gap: 12px;
+  z-index: 10;
+  flex-wrap: wrap;
+}
+
+.chart-tools-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Переключатели таймфреймов (S5, M1, M5, H1 и т.д.) */
+.tf-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary, #9db2c6);
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.tf-btn:hover {
+  background-color: var(--bg-surface-hover, #1e222d);
+  color: var(--text-primary, #f0f3fa);
+}
+
+.tf-btn.active {
+  background-color: var(--bg-surface-hover, #1e222d);
+  color: var(--color-primary, #2962ff);
+  border-color: var(--color-primary, #2962ff);
+}
+
+/* Переключатели типов графика (Свечи, Линия, Бары, Area) */
+.chart-type-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary, #9db2c6);
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.chart-type-btn:hover,
+.chart-type-btn.active {
+  background-color: var(--bg-surface-hover, #1e222d);
+  color: var(--color-primary, #2962ff);
+}
+
+/* Разделитель на панели */
+.toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background-color: var(--border-color, #2a2e39);
+  margin: 0 4px;
+}
+
+/* ==========================================
+   3. ЛЕГЕНДА СВЕЧЕЙ И КОТИРОВОК (OHLC LEGEND)
+   ========================================== */
+.chart-legend {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+.legend-symbol {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text-primary, #f0f3fa);
+}
+
+.ohlc-values {
+  display: flex;
+  gap: 10px;
+  color: var(--text-secondary, #9db2c6);
+}
+
+.ohlc-item span {
+  font-weight: 600;
+}
+
+.ohlc-up {
+  color: var(--color-success, #089981);
+}
+
+.ohlc-down {
+  color: var(--color-danger, #f23645);
+}
+
+/* ==========================================
+   4. ТЕКУЩАЯ ЦЕНА И АНИМАЦИЯ ПУЛЬСАЦИИ
+   ========================================== */
+.live-price-badge {
+  position: absolute;
+  right: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #ffffff;
+  box-shadow: var(--shadow-sm, 0 2px 4px rgba(0,0,0,0.3));
+  transition: top 0.1s ease-out, background-color 0.2s ease;
+}
+
+.price-up {
+  background-color: var(--color-success, #089981);
+}
+
+.price-down {
+  background-color: var(--color-danger, #f23645);
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #ffffff;
+  animation: pulseDot 1.2s infinite ease-in-out;
+}
+
+@keyframes pulseDot {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.8);
+    opacity: 0.5;
+  }
+}
+
+/* ==========================================
+   5. МАРКЕРЫ И ЛИНИИ АКТИВНЫХ СДЕЛОК (TRADE OVERLAYS)
+   ========================================== */
+/* Линия цены входа в сделку */
+.trade-entry-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  border-top: 1px dashed;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.entry-buy {
+  border-color: var(--color-success, #089981);
+}
+
+.entry-sell {
+  border-color: var(--color-danger, #f23645);
+}
+
+/* Пин-маркер сделки на графике */
+.trade-marker-pin {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 800;
+  font-size: 0.75rem;
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.4));
+  animation: popIn 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.pin-buy {
+  background-color: var(--color-success, #089981);
+  box-shadow: 0 0 10px var(--color-success-glow, rgba(8,153,129,0.4));
+}
+
+.pin-sell {
+  background-color: var(--color-danger, #f23645);
+  box-shadow: 0 0 10px var(--color-danger-glow, rgba(242,54,69,0.4));
+}
+
+/* Линия экспирации (отсчет времени) */
+.trade-expiration-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  border-left: 1px dashed var(--color-warning, #ff9800);
+  z-index: 4;
+  pointer-events: none;
+}
+
+.expiration-timer-badge {
+  position: absolute;
+  top: 10px;
+  transform: translateX(-50%);
+  background-color: var(--color-warning, #ff9800);
+  color: #000;
+  font-weight: 800;
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  z-index: 5;
+}
+
+/* ==========================================
+   6. БОКОВАЯ ПАНЕЛЬ ИНСТРУМЕНТОВ РИСОВАНИЯ
+   ========================================== */
+.drawing-toolbar {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background-color: var(--bg-card, #181c27);
+  border: 1px solid var(--border-color, #2a2e39);
+  padding: 6px;
+  border-radius: var(--radius-md, 8px);
+  z-index: 8;
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.4));
+}
+
+.draw-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #9db2c6);
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.draw-btn:hover {
+  background-color: var(--bg-surface-hover, #1e222d);
+  color: var(--text-primary, #f0f3fa);
+}
+
+.draw-btn.active {
+  background-color: var(--color-primary, #2962ff);
+  color: #ffffff;
+}
+
+/* ==========================================
+   7. ВСПЛЫВАЮЩЕЕ ОКНО РЕЗУЛЬТАТА СДЕЛКИ (WIN/LOSS POPUP)
+   ========================================== */
+.trade-result-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 20;
+  padding: 16px 28px;
+  border-radius: var(--radius-lg, 12px);
+  background-color: var(--bg-card, #181c27);
+  border: 1px solid var(--border-color, #2a2e39);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.6));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.result-win {
+  border-color: var(--color-success, #089981);
+  box-shadow: 0 0 20px var(--color-success-glow, rgba(8,153,129,0.3));
+}
+
+.result-loss {
+  border-color: var(--color-danger, #f23645);
+  box-shadow: 0 0 20px var(--color-danger-glow, rgba(242,54,69,0.3));
+}
+
+.result-title {
+  font-size: 1.1rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.result-amount {
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+}
+
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -45%) scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
