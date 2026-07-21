@@ -17,52 +17,73 @@ import AssetSelector from './components/AssetSelector';
 import ChartView from './components/Chart';
 import TradingPanel from './components/TradingPanel';
 
-// Регистрация модулей Chart.js
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-  Filler
-);
+// Импорт вашего API сервиса
+import api from './services/api'; //
 
-export const ASSETS = [
-  { id: 'btc', name: 'BTC / USD', price: 64250.0, category: 'Crypto', payout: 85 },
-  { id: 'eth', name: 'ETH / USD', price: 3480.0, category: 'Crypto', payout: 82 },
-  { id: 'eurusd', name: 'EUR / USD', price: 1.0850, category: 'Forex', payout: 80 },
-  { id: 'gbpusd', name: 'GBP / USD', price: 1.2720, category: 'Forex', payout: 78 },
-  { id: 'aapl', name: 'Apple Inc.', price: 214.2, category: 'Stocks', payout: 75 }
-];
+// Регистрация модулей Chart.js
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
 export default function App() {
-  const [selectedAsset, setSelectedAsset] = useState(ASSETS[0]);
-  const [balance, setBalance] = useState(10000.0);
+  // Состояния для хранения реальных данных с сервера
+  const [assets, setAssets] = useState([]);
+  const [selectedAsset, setSelectedAsset] = useState(null);
+  const [balance, setBalance] = useState(0);
+  
   const [amount, setAmount] = useState(100);
   const [duration, setDuration] = useState('01:00');
   const [priceHistory, setPriceHistory] = useState([]);
   const [timeLabels, setTimeLabels] = useState([]);
   const [isAssetMenuOpen, setIsAssetMenuOpen] = useState(false);
   const [activeTrades, setActiveTrades] = useState([]);
+  
+  // Состояния загрузки и ошибок
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  // Инициализация и симуляция изменения цен в реальном времени
+  // 1. Инициализация приложения: запрос данных с сервера
   useEffect(() => {
-    const initialPrices = [];
-    const initialLabels = [];
-    let currentPrice = selectedAsset.price;
-    const now = new Date();
+    const fetchInitialData = async () => {
+      try {
+        setIsLoading(true);
+        setError(null);
+        
+        // Получаем профиль (с балансом) и доступные активы параллельно
+        const [profileData, assetsData] = await Promise.all([
+          api.auth.getMe(),
+          api.trading.getAssets()
+        ]);
 
-    for (let i = 20; i >= 0; i--) {
-      const time = new Date(now.getTime() - i * 2000);
-      initialLabels.push(time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-      currentPrice += (Math.random() - 0.49) * (currentPrice * 0.001);
-      initialPrices.push(parseFloat(currentPrice.toFixed(2)));
-    }
+        if (profileData && profileData.user) {
+          setBalance(profileData.user.balance);
+        }
 
-    setPriceHistory(initialPrices);
-    setTimeLabels(initialLabels);
+        if (assetsData && assetsData.assets && assetsData.assets.length > 0) {
+          setAssets(assetsData.assets);
+          setSelectedAsset(assetsData.assets[0]); // Выбираем первый актив по умолчанию
+          
+          // Подготавливаем начальный график отталкиваясь от реальной цены актива
+          const basePrice = assetsData.assets[0].price;
+          setPriceHistory(Array(20).fill(basePrice));
+          
+          const now = new Date();
+          setTimeLabels(Array(20).fill(0).map((_, i) => 
+            new Date(now.getTime() - (19 - i) * 2000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          ));
+        }
+      } catch (err) {
+        console.error('Ошибка загрузки:', err);
+        setError('Нет соединения с API. Проверьте токен авторизации или URL сервера.');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchInitialData();
+  }, []);
+
+  // 2. Симуляция движения графика (пока на сервере нет WebSockets)
+  useEffect(() => {
+    if (!selectedAsset) return;
 
     const interval = setInterval(() => {
       const newTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -78,33 +99,54 @@ export default function App() {
     return () => clearInterval(interval);
   }, [selectedAsset]);
 
-  const currentPrice = priceHistory[priceHistory.length - 1] || selectedAsset.price;
-  const previousPrice = priceHistory[priceHistory.length - 2] || currentPrice;
-  const isUp = currentPrice >= previousPrice;
-
-  // Обработка покупки (Выше / Ниже)
-  const handleTrade = (type) => {
+  // 3. Отправка реального запроса на создание сделки
+  const handleTrade = async (type) => {
     if (balance < amount) {
       alert('Недостаточно средств на балансе!');
       return;
     }
 
-    setBalance(prev => prev - amount);
+    try {
+      // Вызываем API для совершения сделки[cite: 1]
+      await api.trading.placeTrade({
+        assetId: selectedAsset.id,
+        type: type, // 'UP' или 'DOWN'
+        amount: amount,
+        duration: duration,
+        accountType: 'REAL'
+      });
 
-    const newTrade = {
-      id: Date.now(),
-      asset: selectedAsset.name,
-      type, // 'UP' или 'DOWN'
-      entryPrice: currentPrice,
-      amount,
-      payout: amount + (amount * (selectedAsset.payout / 100)),
-      time: new Date().toLocaleTimeString()
-    };
+      // Локально обновляем баланс (в реальном приложении лучше заново запросить api.trading.getBalance())
+      setBalance(prev => prev - amount);
 
-    setActiveTrades(prev => [newTrade, ...prev]);
+      const currentPrice = priceHistory[priceHistory.length - 1] || selectedAsset.price;
+      
+      const newTrade = {
+        id: Date.now(),
+        asset: selectedAsset.name,
+        type, 
+        entryPrice: currentPrice,
+        amount,
+        payout: amount + (amount * (selectedAsset.payout / 100)),
+        time: new Date().toLocaleTimeString()
+      };
+
+      setActiveTrades(prev => [newTrade, ...prev]);
+    } catch (err) {
+      console.error(err);
+      alert('Ошибка при открытии сделки: ' + (err.message || 'Сбой сервера'));
+    }
   };
 
-  // Конфигурация графика для Chart.js
+  if (isLoading) return <div style={{ padding: '2rem', color: '#fff' }}>Подключение к серверу...</div>;
+  if (error) return <div style={{ padding: '2rem', color: '#EF4444' }}>{error}</div>;
+  if (!selectedAsset) return <div style={{ padding: '2rem', color: '#fff' }}>Активы не загружены</div>;
+
+  const currentPrice = priceHistory[priceHistory.length - 1] || selectedAsset.price;
+  const previousPrice = priceHistory[priceHistory.length - 2] || currentPrice;
+  const isUp = currentPrice >= previousPrice;
+
+  // Конфигурация графика
   const chartData = {
     labels: timeLabels,
     datasets: [
@@ -151,22 +193,18 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0F172A', color: '#F8FAFC', fontFamily: 'sans-serif' }}>
-      {/* Шапка */}
       <Header balance={balance} />
 
-      {/* Основной контент */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', height: 'calc(100vh - 65px)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', padding: '20px', gap: '20px' }}>
-          {/* Селектор активов */}
           <AssetSelector
-            assets={ASSETS}
+            assets={assets}
             selectedAsset={selectedAsset}
             setSelectedAsset={setSelectedAsset}
             isAssetMenuOpen={isAssetMenuOpen}
             setIsAssetMenuOpen={setIsAssetMenuOpen}
           />
 
-          {/* График */}
           <ChartView
             selectedAsset={selectedAsset}
             currentPrice={currentPrice}
@@ -176,7 +214,6 @@ export default function App() {
           />
         </div>
 
-        {/* Панель торговли */}
         <TradingPanel
           selectedAsset={selectedAsset}
           amount={amount}
