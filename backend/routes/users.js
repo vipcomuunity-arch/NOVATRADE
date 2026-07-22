@@ -1,26 +1,30 @@
 /**
  * backend/routes/users.js
- * 
  * Маршруты управления профилем пользователя, сброса демо-баланса,
  * расчета торговой статистики и смены пароля.
+ * Работает с реальной базой данных PostgreSQL через Knex.js.
  */
-
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
+const knex = require('knex');
 
-// Импорт мидлвара авторизации и базы пользователей из auth.js
-const { authenticateToken, usersDb } = require('./auth');
+// Импортируем централизованный конфиг и мидлвар авторизации
+const config = require('../config');
+const { authenticateToken } = require('./auth');
 
-// Имитация базы истории сделок для расчета статистики (если не подключена БД)
-const tradeHistoryDb = [];
+// Инициализация Knex (в идеале вынести в backend/db.js для переиспользования пула)
+const db = knex(config.db);
 
 // ==========================================
 // 1. ПОЛУЧЕНИЕ ПРОФИЛЯ ПОЛЬЗОВАТЕЛЯ
 // ==========================================
-router.get('/profile', authenticateToken, (req, res) => {
+router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const user = Array.from(usersDb.values()).find(u => u.id === req.user.id);
+    const user = await db('users')
+      .where({ id: req.user.id })
+      .select('id', 'email', 'name', 'avatar', 'balance', 'currency', 'is_verified', 'created_at')
+      .first();
 
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'Пользователь не найден' });
@@ -28,19 +32,10 @@ router.get('/profile', authenticateToken, (req, res) => {
 
     res.json({
       status: 'success',
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        avatar: user.avatar || null,
-        balance: user.balance,
-        currency: user.currency || 'USD',
-        isVerified: user.verified || false,
-        createdAt: user.createdAt,
-      },
+      user,
     });
   } catch (error) {
-    console.error('[User Profile Error]:', error);
+    console.error('[User Profile Error]:', error.message);
     res.status(500).json({ status: 'error', message: 'Ошибка при получении профиля' });
   }
 });
@@ -48,94 +43,116 @@ router.get('/profile', authenticateToken, (req, res) => {
 // ==========================================
 // 2. ОБНОВЛЕНИЕ ДАННЫХ ПРОФИЛЯ
 // ==========================================
-router.put('/profile', authenticateToken, (req, res) => {
+router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { name, avatar } = req.body;
-    const user = Array.from(usersDb.values()).find(u => u.id === req.user.id);
+    const updateData = {};
 
-    if (!user) {
-      return res.status(404).json({ status: 'error', message: 'Пользователь не найден' });
+    // Валидация и подготовка данных
+    if (name !== undefined) {
+      const trimmedName = name.trim();
+      if (trimmedName.length < 2 || trimmedName.length > 100) {
+        return res.status(400).json({ status: 'error', message: 'Имя должно содержать от 2 до 100 символов' });
+      }
+      updateData.name = trimmedName;
     }
 
-    if (name) user.name = name.trim();
-    if (avatar) user.avatar = avatar;
+    if (avatar !== undefined) {
+      if (typeof avatar !== 'string' || avatar.length > 2000) {
+        return res.status(400).json({ status: 'error', message: 'Некорректный формат аватара' });
+      }
+      updateData.avatar = avatar;
+    }
 
-    usersDb.set(user.email, user);
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ status: 'error', message: 'Нет данных для обновления' });
+    }
+
+    // Обновление в БД
+    const [updatedUser] = await db('users')
+      .where({ id: req.user.id })
+      .update(updateData)
+      .returning(['id', 'email', 'name', 'avatar', 'balance', 'currency']);
+
+    if (!updatedUser) {
+      return res.status(404).json({ status: 'error', message: 'Пользователь не найден' });
+    }
 
     res.json({
       status: 'success',
       message: 'Профиль успешно обновлен',
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        avatar: user.avatar,
-        balance: user.balance,
-        currency: user.currency,
-      },
+      user: updatedUser,
     });
   } catch (error) {
-    console.error('[User Profile Update Error]:', error);
+    console.error('[User Profile Update Error]:', error.message);
     res.status(500).json({ status: 'error', message: 'Ошибка при обновлении профиля' });
   }
 });
 
 // ==========================================
-// 3. СБРОС / ПОПОЛНЕНИЕ ДЕМО-БАЛАНСА ($10,000)
+// 3. СБРОС / ПОПОЛНЕНИЕ ДЕМО-БАЛАНСА
 // ==========================================
-router.post('/reset-demo', authenticateToken, (req, res) => {
+router.post('/reset-demo', authenticateToken, async (req, res) => {
   try {
-    const user = Array.from(usersDb.values()).find(u => u.id === req.user.id);
+    const defaultBalance = config.trading.defaultDemoBalance;
 
-    if (!user) {
+    const [updatedUser] = await db('users')
+      .where({ id: req.user.id })
+      .update({ balance: defaultBalance })
+      .returning(['id', 'balance']);
+
+    if (!updatedUser) {
       return res.status(404).json({ status: 'error', message: 'Пользователь не найден' });
     }
 
-    const DEFAULT_DEMO_BALANCE = 10000.00;
-    user.balance = DEFAULT_DEMO_BALANCE;
-
-    usersDb.set(user.email, user);
-
     res.json({
       status: 'success',
-      message: 'Демо-баланс успешно пополнен до $10,000',
-      newBalance: user.balance,
+      message: `Демо-баланс успешно пополнен до $${defaultBalance}`,
+      newBalance: updatedUser.balance,
     });
   } catch (error) {
-    console.error('[User Reset Demo Error]:', error);
+    console.error('[User Reset Demo Error]:', error.message);
     res.status(500).json({ status: 'error', message: 'Ошибка при сбросе баланса' });
   }
 });
 
 // ==========================================
-// 4. ТОРГОВАЯ СТАТИСТИКА ПОЛЬЗОВАТЕЛЯ
+// 4. ТОРГОВАЯ СТАТИСТИКА ПОЛЬЗОВАТЕЛЯ (SQL AGGREGATION)
 // ==========================================
-router.get('/stats', authenticateToken, (req, res) => {
+router.get('/stats', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const userTrades = tradeHistoryDb.filter(t => t.userId === userId);
+    // Используем мощь SQL для расчета статистики. 
+    // Это в разы быстрее, чем выгружать все сделки в Node.js и считать их в цикле.
+    const stats = await db('trades')
+      .where({ user_id: req.user.id })
+      .whereIn('status', ['WIN', 'LOSS', 'DRAW']) // Считаем только закрытые сделки
+      .select(
+        db.raw('COUNT(*) as total_trades'),
+        db.raw("COUNT(CASE WHEN status = 'WIN' THEN 1 END) as winning_trades"),
+        db.raw("COUNT(CASE WHEN status = 'LOSS' THEN 1 END) as losing_trades"),
+        db.raw('COALESCE(SUM(amount), 0) as total_volume'),
+        // Net profit: при выигрыше profit включает тело депозита, поэтому вычитаем amount. При проигрыше profit = 0, значит чистый убыток = -amount.
+        db.raw("COALESCE(SUM(CASE WHEN status = 'WIN' THEN (profit - amount) ELSE -amount END), 0) as net_profit")
+      )
+      .first();
 
-    const totalTrades = userTrades.length;
-    const winningTrades = userTrades.filter(t => t.status === 'WIN').length;
-    const losingTrades = userTrades.filter(t => t.status === 'LOSS').length;
-
+    const totalTrades = parseInt(stats.total_trades, 10);
+    const winningTrades = parseInt(stats.winning_trades, 10);
     const winRate = totalTrades > 0 ? parseFloat(((winningTrades / totalTrades) * 100).toFixed(1)) : 0;
-    const totalVolume = userTrades.reduce((acc, t) => acc + (t.amount || 0), 0);
-    const netProfit = userTrades.reduce((acc, t) => acc + (t.profit || 0) - (t.amount || 0), 0);
 
     res.json({
       status: 'success',
       stats: {
         totalTrades,
         winningTrades,
-        losingTrades,
+        losingTrades: parseInt(stats.losing_trades, 10),
         winRate: `${winRate}%`,
-        totalVolume: parseFloat(totalVolume.toFixed(2)),
-        netProfit: parseFloat(netProfit.toFixed(2)),
+        totalVolume: parseFloat(stats.total_volume),
+        netProfit: parseFloat(stats.net_profit),
       },
     });
   } catch (error) {
-    console.error('[User Stats Error]:', error);
+    console.error('[User Stats Error]:', error.message);
     res.status(500).json({ status: 'error', message: 'Ошибка при получении статистики' });
   }
 });
@@ -150,34 +167,40 @@ router.put('/change-password', authenticateToken, async (req, res) => {
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ status: 'error', message: 'Укажите текущий и новый пароли' });
     }
-
     if (newPassword.length < 6) {
       return res.status(400).json({ status: 'error', message: 'Новый пароль должен содержать минимум 6 символов' });
     }
 
-    const user = Array.from(usersDb.values()).find(u => u.id === req.user.id);
+    // 1. Получаем текущий хэш пароля из БД
+    const user = await db('users').where({ id: req.user.id }).select('password_hash').first();
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'Пользователь не найден' });
     }
 
-    // Проверка текущего пароля
-    const isMatch = await bcrypt.compare(currentPassword, user.passwordHash);
+    // 2. Проверяем текущий пароль
+    const isMatch = await bcrypt.compare(currentPassword, user.password_hash);
     if (!isMatch) {
       return res.status(400).json({ status: 'error', message: 'Текущий пароль указан неверно' });
     }
 
-    // Хэширование и запись нового пароля
-    user.passwordHash = await bcrypt.hash(newPassword, 10);
-    usersDb.set(user.email, user);
+    // 3. Хэшируем новый пароль и обновляем в БД
+    const newPasswordHash = await bcrypt.hash(newPassword, config.security.bcryptSaltRounds);
+    
+    await db('users')
+      .where({ id: req.user.id })
+      .update({ password_hash: newPasswordHash });
 
     res.json({
       status: 'success',
       message: 'Пароль успешно изменен',
     });
   } catch (error) {
-    console.error('[User Change Password Error]:', error);
+    console.error('[User Change Password Error]:', error.message);
     res.status(500).json({ status: 'error', message: 'Ошибка при смене пароля' });
   }
 });
 
+// ==========================================
+// ЭКСПОРТ
+// ==========================================
 module.exports = router;
