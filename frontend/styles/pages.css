@@ -1,0 +1,217 @@
+/* frontend/styles/pages.css */
+
+/* ==========================================
+   ОБЩИЕ СТИЛИ СТРАНИЦ
+   ========================================== */
+.profile-page, .settings-page {
+  padding: 24px 16px;
+  color: #F8FAFC;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 100%;
+}
+.profile-container, .settings-container {
+  max-width: 960px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.page-loading, .page-error {
+  padding: 40px; text-align: center; color: #94A3B8; font-size: 16px;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+}
+.animate-spin { animation: spin 1s linear infinite; }
+@keyframes spin { 100% { transform: rotate(360deg); } }
+
+/* ==========================================
+   PROFILE: HEADER & STATS
+   ========================================== */
+.profile-header {
+  display: flex; align-items: center; gap: 20px;
+  background: #1E293B; padding: 24px; border-radius: 16px; border: 1px solid #334155; flex-wrap: wrap;
+}
+.avatar-container { position: relative; }
+.avatar {
+  width: 76px; height: 76px; border-radius: 50%; background: #0F172A;
+  display: flex; align-items: center; justify-content: center; border: 2px solid #3B82F6;
+}
+.avatar-edit-btn {
+  position: absolute; bottom: 2px; right: 2px; background: #3B82F6; border: none; border-radius: 50%;
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.user-main-info { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.user-name-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.user-name { font-size: 22px; font-weight: 800; margin: 0; }
+.rank-badge {
+  display: inline-flex; align-items: center; gap: 4px; background: rgba(245, 158, 11, 0.15);
+  color: #F59E0B; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700;
+}
+.user-sub-info { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #94A3B8; }
+.copy-btn { background: none; border: none; cursor: pointer; padding: 2px; display: flex; align-items: center; }
+.dot-sep { color: #334155; }
+.verification-badge {
+  display: flex; align-items: center; gap: 12px; background: #0F172A; padding: 12px 18px;
+  border-radius: 12px; border: 1px solid #334155;
+}
+.verif-title { font-size: 13px; font-weight: 700; }
+.verif-title.success { color: #10B981; }
+.verif-title.warning { color: #F59E0B; }
+.verif-sub { font-size: 11px; color: #64748B; }
+
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.stat-card {
+  background: #1E293B; border: 1px solid #334155; border-radius: 12px; padding: 16px 20px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.stat-label { font-size: 11px; color: #64748B; font-weight: 700; text-transform: uppercase; }
+.stat-value { font-size: 22px; font-weight: 800; }
+.text-success { color: #10B981 !important; }
+.text-primary { color: #3B82F6 !important; }
+.text-danger { color: #EF4444 !important; }
+.text-muted { color: #64748B !important; }
+
+/* ==========================================
+   TABS & CONTENT CARDS (Общие для Profile и Settings)
+   ========================================== */
+.tabs-nav {
+  display: flex; gap: 8px; border-bottom: 1px solid #334155; padding-bottom: 8px; overflow-x: auto;
+}
+.tab-btn {
+  display: flex; align-items: center; gap: 8px; background: transparent; border: none;
+  color: #94A3B8; padding: 10px 18px; border-radius: 10px; font-size: 14px; font-weight: 600;
+  cursor: pointer; white-space: nowrap; transition: all 0.15s ease;
+}
+.tab-btn:hover { background: rgba(255,255,255,0.05); color: #F8FAFC; }
+.tab-btn.active { background: #1E293B; color: #F8FAFC; border: 1px solid #334155; }
+
+.content-card, .content-box {
+  background: #1E293B; border: 1px solid #334155; border-radius: 14px; padding: 24px;
+}
+.section-container, .section { display: flex; flex-direction: column; gap: 16px; }
+.section-title { font-size: 16px; font-weight: 800; margin: 0; }
+.sub-title { font-size: 15px; font-weight: 700; margin: 10px 0 0 0; }
+
+/* ==========================================
+   FORMS & INPUTS
+   ========================================== */
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.input-group { display: flex; flex-direction: column; gap: 6px; }
+.input-group label { font-size: 12px; font-weight: 600; color: #94A3B8; }
+.input-wrapper {
+  position: relative; display: flex; align-items: center;
+  background: #0F172A; border: 1px solid #334155; border-radius: 8px; transition: border-color 0.2s;
+}
+.input-wrapper:focus-within { border-color: #3B82F6; }
+.input-wrapper.small { padding: 6px 12px; gap: 6px; }
+.input-icon { position: absolute; left: 12px; color: #64748B; pointer-events: none; }
+.verified-icon { position: absolute; right: 12px; color: #10B981; }
+.form-input {
+  width: 100%; background: transparent; border: none; outline: none;
+  color: #F8FAFC; font-size: 14px; padding: 10px 12px 10px 38px; box-sizing: border-box;
+}
+.form-input.disabled { color: #64748B; cursor: not-allowed; }
+.number-input {
+  width: 70px; background: transparent; border: none; color: #F8FAFC;
+  font-size: 14px; font-weight: 700; outline: none;
+}
+.select-input {
+  background: #0F172A; border: 1px solid #334155; border-radius: 8px;
+  color: #F8FAFC; padding: 8px 12px; font-size: 13px; font-weight: 600; outline: none; cursor: pointer;
+}
+.currency-sign { color: #64748B; font-weight: 700; }
+
+.btn-primary {
+  display: flex; align-items: center; gap: 6px; background: #3B82F6; color: #FFF; border: none;
+  border-radius: 8px; padding: 10px 20px; font-weight: 700; font-size: 14px; cursor: pointer;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); transition: filter 0.2s;
+}
+.btn-primary:hover { filter: brightness(1.1); }
+.btn-secondary {
+  display: flex; align-items: center; gap: 6px; background: #0F172A; border: 1px solid #334155;
+  border-radius: 8px; color: #94A3B8; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.btn-upload {
+  display: flex; align-items: center; gap: 6px; background: #3B82F6; color: #FFF; border: none;
+  border-radius: 6px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+
+.alert {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px;
+  font-size: 13px; font-weight: 600;
+}
+.alert.success { background: rgba(16, 185, 129, 0.15); border: 1px solid #10B981; color: #10B981; }
+.alert.error { background: rgba(239, 68, 68, 0.15); border: 1px solid #EF4444; color: #EF4444; }
+
+/* ==========================================
+   SECURITY & KYC
+   ========================================== */
+.security-box {
+  display: flex; justify-content: space-between; align-items: center; padding: 10px 0; gap: 16px; flex-wrap: wrap;
+}
+.security-info { display: flex; align-items: center; gap: 14px; }
+.icon-box { background: rgba(59, 130, 246, 0.12); padding: 10px; border-radius: 10px; }
+.setting-label { font-weight: 700; font-size: 15px; }
+.setting-desc { font-size: 12px; color: #64748B; margin-top: 2px; }
+.toggle-btn {
+  border: none; border-radius: 20px; padding: 8px 18px; color: #FFF; font-weight: 700;
+  font-size: 12px; cursor: pointer; background: #334155; transition: background 0.2s;
+}
+.toggle-btn.active { background: #10B981; }
+
+.password-form { display: flex; flex-direction: column; gap: 14px; max-width: 420px; }
+
+.kyc-list { display: flex; flex-direction: column; gap: 12px; }
+.kyc-row {
+  display: flex; justify-content: space-between; align-items: center; background: #0F172A;
+  padding: 14px 18px; border-radius: 10px; border: 1px solid #334155; flex-wrap: wrap; gap: 12px;
+}
+.kyc-info { display: flex; align-items: center; gap: 12px; }
+.kyc-title { font-weight: 700; font-size: 14px; }
+.kyc-sub { font-size: 12px; color: #64748B; }
+.status-done { color: #10B981; font-weight: 700; font-size: 12px; }
+
+/* ==========================================
+   TABLES
+   ========================================== */
+.table-wrapper { overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+.data-table th {
+  padding: 10px 12px; color: #64748B; font-weight: 700; font-size: 11px;
+  text-transform: uppercase; border-bottom: 1px solid #334155;
+}
+.data-table td { padding: 12px; border-bottom: 1px solid rgba(51, 65, 85, 0.5); }
+.table-type { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.status-badge {
+  background: rgba(16, 185, 129, 0.15); color: #10B981; font-size: 11px;
+  font-weight: 700; padding: 2px 8px; border-radius: 4px;
+}
+
+/* ==========================================
+   SETTINGS: TOGGLES & ROWS
+   ========================================== */
+.settings-header {
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
+}
+.header-left { display: flex; align-items: center; gap: 12px; }
+.header-icon { background: rgba(59, 130, 246, 0.12); padding: 10px; border-radius: 12px; display: flex; align-items: center; justify-content: center; }
+.page-title { font-size: 20px; font-weight: 800; margin: 0; }
+.page-subtitle { font-size: 12px; color: #94A3B8; margin: 2px 0 0 0; }
+.header-actions { display: flex; gap: 10px; }
+
+.setting-row {
+  display: flex; justify-content: space-between; align-items: center; padding: 12px 0;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.4); gap: 16px;
+}
+.toggle-switch {
+  width: 44px; height: 24px; border-radius: 12px; border: none; padding: 2px;
+  cursor: pointer; transition: background-color 0.2s; display: flex; align-items: center;
+  background: #334155;
+}
+.toggle-switch.active { background: #3B82F6; }
+.toggle-switch.active.success { background: #10B981; }
+.toggle-circle {
+  width: 20px; height: 20px; border-radius: 50%; background: #FFF;
+  transition: transform 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+.toggle-switch.active .toggle-circle { transform: translateX(20px); }
