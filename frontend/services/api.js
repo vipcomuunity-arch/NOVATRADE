@@ -1,235 +1,224 @@
-
 /**
- * frontendServicesApi.js
- * Путь в проекте: frontend/services/api.js или src/services/api.js
- * 
- * Модуль взаимодействия с REST API для торговой платформы NovaTrade.
+ * frontend/services/api.js
+ * Централизованный модуль взаимодействия с REST API NovaTrade.
+ * Использует Axios с интерцепторами для автоматической авторизации
+ * и обновления токенов при истечении срока действия.
  */
+import axios from 'axios';
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.novatrade.io/v1';
-
-/**
- * Вспомогательная функция для выполнения HTTP-запросов к API
- */
-async function request(endpoint, options = {}) {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
-
-  const headers = {
+// ==========================================
+// 1. СОЗДАНИЕ ЭКЗЕМПЛЯРА AXIOS
+// ==========================================
+// В dev-режиме Vite proxy перенаправит /v1/* на http://localhost:5000/v1/*
+// В продакшене можно задать VITE_API_URL=https://api.novatrade.io
+const apiClient = axios.create({
+  baseURL: import.meta.env.VITE_API_URL || '/v1',
+  timeout: 15000,
+  headers: {
     'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...options.headers,
-  };
+  },
+});
 
-  // Если отправляем файлы/FormData, браузер должен сам автоматически выставить Content-Type с boundary
-  if (options.body instanceof FormData) {
-    delete headers['Content-Type'];
-  }
+// ==========================================
+// 2. INTERCEPTOR: АВТОМАТИЧЕСКОЕ ПРИКРЕПЛЕНИЕ ТОКЕНА
+// ==========================================
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
 
-  const config = {
-    ...options,
-    headers,
-  };
+// ==========================================
+// 3. INTERCEPTOR: АВТООБНОВЛЕНИЕ ТОКЕНА ПРИ 401
+// ==========================================
+let isRefreshing = false;
+let failedQueue = [];
 
-  try {
-    const response = await fetch(`${BASE_URL}${endpoint}`, config);
+const processQueue = (error, token = null) => {
+  failedQueue.forEach(({ resolve, reject }) => {
+    if (error) reject(error);
+    else resolve(token);
+  });
+  failedQueue = [];
+};
 
-    // Обработка автоматического разлогинивания при истечении токена
-    if (response.status === 401) {
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('auth_token');
+apiClient.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+
+    // Если 401 и мы ещё не пробовали обновить токен
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      if (isRefreshing) {
+        // Если обновление уже идёт, ставим запрос в очередь
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        })
+          .then((token) => {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            return apiClient(originalRequest);
+          })
+          .catch((err) => Promise.reject(err));
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      const refreshToken = localStorage.getItem('refreshToken');
+
+      if (!refreshToken) {
+        // Нет refresh token — разлогиниваем
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        window.location.href = '/login';
+        return Promise.reject(error);
+      }
+
+      try {
+        const { data } = await axios.post('/v1/auth/refresh', { refreshToken });
+        const newAccessToken = data.accessToken;
+
+        localStorage.setItem('accessToken', newAccessToken);
+        apiClient.defaults.headers.common.Authorization = `Bearer ${newAccessToken}`;
+
+        processQueue(null, newAccessToken);
+        originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
+        return apiClient(originalRequest);
+      } catch (refreshError) {
+        processQueue(refreshError, null);
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        window.location.href = '/login';
+        return Promise.reject(refreshError);
+      } finally {
+        isRefreshing = false;
       }
     }
 
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(data.message || `Ошибка сервера (${response.status})`);
-    }
-
-    return data;
-  } catch (error) {
-    console.error(`[API Error] ${endpoint}:`, error.message);
-    throw error;
+    return Promise.reject(error);
   }
-}
+);
 
 // ==========================================
-// 1. АУТЕНТИФИКАЦИЯ И АВТОРИЗАЦИЯ (AUTH)
+// 4. АУТЕНТИФИКАЦИЯ И АВТОРИЗАЦИЯ (AUTH)
 // ==========================================
 export const authApi = {
-  // Вход пользователя
   async login(credentials) {
-    const data = await request('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify(credentials),
-    });
-    if (data.token && typeof window !== 'undefined') {
-      localStorage.setItem('auth_token', data.token);
+    const { data } = await apiClient.post('/auth/login', credentials);
+    if (data.accessToken) {
+      localStorage.setItem('accessToken', data.accessToken);
+      localStorage.setItem('refreshToken', data.refreshToken);
     }
     return data;
   },
 
-  // Регистрация нового аккаунта
   async register(userData) {
-    const data = await request('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(userData),
-    });
-    if (data.token && typeof window !== 'undefined') {
-      localStorage.setItem('auth_token', data.token);
+    const { data } = await apiClient.post('/auth/register', userData);
+    if (data.accessToken) {
+      localStorage.setItem('accessToken', data.accessToken);
+      localStorage.setItem('refreshToken', data.refreshToken);
     }
     return data;
   },
 
-  // Выход из системы
   async logout() {
     try {
-      await request('/auth/logout', { method: 'POST' });
+      const refreshToken = localStorage.getItem('refreshToken');
+      await apiClient.post('/auth/logout', { refreshToken });
     } finally {
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('auth_token');
-      }
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('refreshToken');
     }
   },
 
-  // Проверка актуальности сессии / получение текущего пользователя
   async getMe() {
-    return request('/auth/me');
+    const { data } = await apiClient.get('/auth/me');
+    return data;
+  },
+
+  async refreshToken(refreshToken) {
+    const { data } = await apiClient.post('/auth/refresh', { refreshToken });
+    return data;
   },
 };
 
 // ==========================================
-// 2. ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ И KYC (PROFILE)
+// 5. ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ (USERS)
 // ==========================================
 export const profileApi = {
-  // Получение данных профиля
   async getProfile() {
-    return request('/user/profile');
+    const { data } = await apiClient.get('/users/profile');
+    return data;
   },
 
-  // Обновление личной информации (ФИО, телефон, страна)
   async updateProfile(profileData) {
-    return request('/user/profile', {
-      method: 'PUT',
-      body: JSON.stringify(profileData),
-    });
+    const { data } = await apiClient.put('/users/profile', profileData);
+    return data;
   },
 
-  // Смена пароля
-  async changePassword({ currentPass, newPass }) {
-    return request('/user/change-password', {
-      method: 'POST',
-      body: JSON.stringify({ currentPass, newPass }),
+  async changePassword({ currentPassword, newPassword }) {
+    const { data } = await apiClient.put('/users/change-password', {
+      currentPassword,
+      newPassword,
     });
+    return data;
   },
 
-  // Включение или отключение 2FA
-  async toggle2FA(enabled) {
-    return request('/user/2fa', {
-      method: 'POST',
-      body: JSON.stringify({ enabled }),
-    });
+  async resetDemoBalance() {
+    const { data } = await apiClient.post('/users/reset-demo');
+    return data;
   },
 
-  // Загрузка фото/документа для верификации KYC
-  async uploadKycDocument(file, docType) {
-    const formData = new FormData();
-    formData.append('document', file);
-    formData.append('docType', docType);
-
-    return request('/user/kyc/upload', {
-      method: 'POST',
-      body: formData,
-    });
+  async getStats() {
+    const { data } = await apiClient.get('/users/stats');
+    return data;
   },
 };
 
 // ==========================================
-// 3. ТОРГОВЛЯ И ТОРГОВАЯ ПАНЕЛЬ (TRADING)
+// 6. ТОРГОВЛЯ (TRADING)
 // ==========================================
 export const tradingApi = {
-  // Получение текущего баланса
-  async getBalance() {
-    return request('/trading/balance');
+  async getAssets(params = {}) {
+    const { data } = await apiClient.get('/trading/assets', { params });
+    return data;
   },
 
-  // Список доступных торговых активов и их доходности (% payout)
-  async getAssets() {
-    return request('/trading/assets');
+  async getAssetById(assetId) {
+    const { data } = await apiClient.get(`/trading/assets/${assetId}`);
+    return data;
   },
 
-  // Открытие сделки (ВЫШЕ / НИЖЕ)
   async placeTrade(tradeParams) {
-    // tradeParams: { assetId, type: 'UP' | 'DOWN', amount, duration, accountType }
-    return request('/trading/trades', {
-      method: 'POST',
-      body: JSON.stringify(tradeParams),
-    });
+    // tradeParams: { assetId, direction: 'UP'|'DOWN', amount, durationSec }
+    const { data } = await apiClient.post('/trading/trades', tradeParams);
+    return data;
   },
 
-  // Получить список активных открытых позиций
   async getActiveTrades() {
-    return request('/trading/trades/active');
+    const { data } = await apiClient.get('/trading/trades/active');
+    return data;
   },
 
-  // История завершенных сделок
   async getTradeHistory(params = {}) {
-    const query = new URLSearchParams(params).toString();
-    return request(`/trading/trades/history?${query}`);
+    const { data } = await apiClient.get('/trading/trades/history', { params });
+    return data;
   },
 };
 
 // ==========================================
-// 4. НАСТРОЙКИ ПЛАТФОРМЫ (SETTINGS)
+// 7. ЭКСПОРТ ЕДИНОГО ОБЪЕКТА
 // ==========================================
-export const settingsApi = {
-  // Загрузить пользовательские настройки
-  async getSettings() {
-    return request('/user/settings');
-  },
-
-  // Сохранить новые настройки
-  async updateSettings(settingsData) {
-    return request('/user/settings', {
-      method: 'PUT',
-      body: JSON.stringify(settingsData),
-    });
-  },
-};
-
-// ==========================================
-// 5. ФИНАНСЫ И ТРАНЗАКЦИИ (WALLET)
-// ==========================================
-export const walletApi = {
-  // История финансовых операций (депозиты, выводы)
-  async getTransactions() {
-    return request('/wallet/transactions');
-  },
-
-  // Создать заявку на пополнение
-  async createDeposit(depositData) {
-    return request('/wallet/deposit', {
-      method: 'POST',
-      body: JSON.stringify(depositData),
-    });
-  },
-
-  // Создать заявку на вывод средств
-  async createWithdrawal(withdrawData) {
-    return request('/wallet/withdraw', {
-      method: 'POST',
-      body: JSON.stringify(withdrawData),
-    });
-  },
-};
-
-// Экспорт единого объекта сервисов по умолчанию
 const api = {
   auth: authApi,
   profile: profileApi,
   trading: tradingApi,
-  settings: settingsApi,
-  wallet: walletApi,
+  client: apiClient, // Прямой доступ к axios для кастомных запросов
 };
 
 export default api;
