@@ -1,26 +1,39 @@
 /**
  * backend/routes/assets.js
- * 
  * Маршруты для получения списка торговых активов, их текущих котировок,
  * категорий и процентов выплат (Payouts).
+ * Работает с реальной базой данных PostgreSQL через Knex.js.
  */
-
 const express = require('express');
 const router = express.Router();
-const { authenticateToken } = require('./auth');
-const { db } = require('./trades'); // Импортируем общую базу активов из trades.js[cite: 1]
+const knex = require('knex');
 
-/**
- * GET / - Получить список всех доступных активов
- */
-router.get('/', authenticateToken, (req, res) => {
+// Импортируем централизованный конфиг и мидлвар авторизации
+const config = require('../config');
+const { authenticateToken } = require('./auth');
+
+// Инициализация Knex (в идеале вынести в backend/db.js для переиспользования пула)
+const db = knex(config.db);
+
+// ==========================================
+// 1. ПОЛУЧЕНИЕ СПИСКА ВСЕХ АКТИВНЫХ АКТИВОВ
+// ==========================================
+router.get('/', authenticateToken, async (req, res) => {
   try {
-    const assets = db.assets || [
-      { id: 'EURUSD', name: 'EUR / USD', category: 'Forex', price: 1.08500, payout: 85 },
-      { id: 'GBPUSD', name: 'GBP / USD', category: 'Forex', price: 1.26420, payout: 82 },
-      { id: 'BTCUSD', name: 'Bitcoin', category: 'Crypto', price: 67450.00, payout: 90 },
-      { id: 'ETHUSD', name: 'Ethereum', category: 'Crypto', price: 3520.50, payout: 88 },
-    ];
+    const { category } = req.query;
+
+    // Базовый запрос: только активные активы, отсортированные по категории и имени
+    let query = db('assets')
+      .where({ is_active: true })
+      .orderBy('category', 'asc')
+      .orderBy('name', 'asc');
+
+    // Опциональная фильтрация по категории (например, ?category=Crypto)
+    if (category) {
+      query = query.where({ category: category.trim() });
+    }
+
+    const assets = await query;
 
     res.json({
       status: 'success',
@@ -28,19 +41,21 @@ router.get('/', authenticateToken, (req, res) => {
       assets,
     });
   } catch (error) {
-    console.error('[Get Assets Error]:', error);
+    console.error('[Get Assets Error]:', error.message);
     res.status(500).json({ status: 'error', message: 'Ошибка при получении списка активов' });
   }
 });
 
-/**
- * GET /:id - Получить информацию по конкретному активу
- */
-router.get('/:id', authenticateToken, (req, res) => {
+// ==========================================
+// 2. ПОЛУЧЕНИЕ ИНФОРМАЦИИ ПО КОНКРЕТНОМУ АКТИВУ
+// ==========================================
+router.get('/:id', authenticateToken, async (req, res) => {
   try {
     const assetId = req.params.id.toUpperCase();
-    const assets = db.assets || [];
-    const asset = assets.find(a => a.id === assetId);
+
+    const asset = await db('assets')
+      .where({ id: assetId })
+      .first();
 
     if (!asset) {
       return res.status(404).json({ status: 'error', message: 'Торговый актив не найден' });
@@ -51,9 +66,12 @@ router.get('/:id', authenticateToken, (req, res) => {
       asset,
     });
   } catch (error) {
-    console.error('[Get Asset By ID Error]:', error);
+    console.error('[Get Asset By ID Error]:', error.message);
     res.status(500).json({ status: 'error', message: 'Ошибка при получении данных актива' });
   }
 });
 
+// ==========================================
+// ЭКСПОРТ
+// ==========================================
 module.exports = router;
