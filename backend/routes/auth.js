@@ -1,129 +1,112 @@
 /**
  * backend/routes/auth.js
- * 
  * Маршруты аутентификации и авторизации пользователей NovaTrade.
- * Обрабатывает регистрацию, вход, обновление JWT токенов и получение профиля.
+ * Работает с реальной базой данных PostgreSQL через Knex.js.
  */
-
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
+const knex = require('knex');
 
-// Загрузка конфигурации (или переменных окружения)
-const JWT_SECRET = process.env.JWT_SECRET || 'novatrade_super_secret_key_2026_change_me_in_prod';
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'novatrade_refresh_secret_key_2026';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
-const REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '7d';
+// Импортируем централизованный конфиг
+const config = require('../config'); 
 
 // ==========================================
-// ИМИТАЦИЯ БАЗЫ ДАННЫХ И ХРАНИЛИЩА ТОКЕНОВ
+// 1. ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ (KNEX)
 // ==========================================
-const usersDb = new Map(); // email -> user object
-const refreshTokensDb = new Set(); // active refresh tokens
-
-// Инициализация тестового демо-аккаунта
-(async () => {
-  const demoPasswordHash = await bcrypt.hash('demo123456', 10);
-  const demoUser = {
-    id: 'usr_demo_777',
-    email: 'demo@novatrade.io',
-    passwordHash: demoPasswordHash,
-    name: 'Demo Trader',
-    balance: 10000.00,
-    currency: 'USD',
-    createdAt: new Date().toISOString(),
-  };
-  usersDb.set(demoUser.email, demoUser);
-})();
+// Примечание: В идеале этот инстанс нужно вынести в отдельный файл backend/db.js, 
+// чтобы переиспользовать один пул соединений во всем приложении.
+const db = knex(config.db);
 
 // ==========================================
-// MIDDLEWARE АУТЕНТИФИКАЦИИ
+// 2. ХРАНИЛИЩЕ REFRESH TOKENS (MVP)
+// ==========================================
+// TODO: В продакшене это нужно перенести в Redis (config.redis), 
+// чтобы токены не пропадали при перезапуске сервера и работали в кластере.
+const activeRefreshTokens = new Set();
+
+// ==========================================
+// 3. MIDDLEWARE АУТЕНТИФИКАЦИИ
 // ==========================================
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
   if (!token) {
     return res.status(401).json({ status: 'error', message: 'Токен авторизации отсутствует' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+  jwt.verify(token, config.security.jwtSecret, (err, decoded) => {
     if (err) {
-      return res.status(401).json({ status: 'error', message: 'Недействительный или истекший токен' });
+      return res.status(403).json({ status: 'error', message: 'Недействительный или истекший токен' });
     }
-    req.user = decoded;
+    req.user = decoded; // { id, email }
     next();
   });
 };
 
 // ==========================================
-// 1. РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ (REGISTER)
+// 4. РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ (REGISTER)
 // ==========================================
 router.post('/register', async (req, res) => {
   try {
     const { email, password, name } = req.body;
 
-    // Проверка обязательных полей
+    // 1. Валидация входных данных
     if (!email || !password) {
       return res.status(400).json({ status: 'error', message: 'Укажите email и пароль' });
     }
-
     if (password.length < 6) {
       return res.status(400).json({ status: 'error', message: 'Пароль должен содержать минимум 6 символов' });
     }
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Проверка существования пользователя
-    if (usersDb.has(normalizedEmail)) {
+    // 2. Проверка существования пользователя в БД
+    const existingUser = await db('users').where({ email: normalizedEmail }).first();
+    if (existingUser) {
       return res.status(400).json({ status: 'error', message: 'Пользователь с таким email уже существует' });
     }
 
-    // Хэширование пароля
-    const passwordHash = await bcrypt.hash(password, 10);
+    // 3. Хэширование пароля
+    const passwordHash = await bcrypt.hash(password, config.security.bcryptSaltRounds);
 
-    // Создание пользователя с демо-балансом $10,000
-    const newUser = {
-      id: 'usr_' + uuidv4().substring(0, 8),
-      email: normalizedEmail,
-      passwordHash,
-      name: name || normalizedEmail.split('@')[0],
-      balance: 10000.00,
-      currency: 'USD',
-      createdAt: new Date().toISOString(),
-    };
+    // 4. Создание пользователя в БД (ID генерируется самой БД через gen_random_uuid())
+    const [newUser] = await db('users')
+      .insert({
+        email: normalizedEmail,
+        password_hash: passwordHash,
+        name: name || normalizedEmail.split('@')[0],
+        balance: config.trading.defaultDemoBalance,
+        currency: 'USD',
+        is_verified: false,
+      })
+      .returning(['id', 'email', 'name', 'balance', 'currency']);
 
-    usersDb.set(normalizedEmail, newUser);
+    // 5. Генерация JWT токенов
+    const tokenPayload = { id: newUser.id, email: newUser.email };
+    const accessToken = jwt.sign(tokenPayload, config.security.jwtSecret, { expiresIn: config.security.jwtExpiresIn });
+    const refreshToken = jwt.sign(tokenPayload, config.security.refreshSecret, { expiresIn: config.security.refreshExpiresIn });
 
-    // Генерация JWT токенов
-    const accessToken = jwt.sign({ id: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-    const refreshToken = jwt.sign({ id: newUser.id, email: newUser.email }, JWT_REFRESH_SECRET, { expiresIn: REFRESH_EXPIRES_IN });
+    activeRefreshTokens.add(refreshToken);
 
-    refreshTokensDb.add(refreshToken);
-
+    // 6. Успешный ответ
     res.status(201).json({
       status: 'success',
       message: 'Регистрация прошла успешно',
       accessToken,
       refreshToken,
-      user: {
-        id: newUser.id,
-        email: newUser.email,
-        name: newUser.name,
-        balance: newUser.balance,
-        currency: newUser.currency,
-      },
+      user: newUser,
     });
   } catch (error) {
-    console.error('[Auth Register Error]:', error);
-    res.status(500).json({ status: 'error', message: 'Внутренняя ошибка сервера' });
+    console.error('[Auth Register Error]:', error.message);
+    res.status(500).json({ status: 'error', message: 'Внутренняя ошибка сервера при регистрации' });
   }
 });
 
 // ==========================================
-// 2. ВХОД В СИСТЕМУ (LOGIN)
+// 5. ВХОД В СИСТЕМУ (LOGIN)
 // ==========================================
 router.post('/login', async (req, res) => {
   try {
@@ -134,24 +117,28 @@ router.post('/login', async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const user = usersDb.get(normalizedEmail);
 
+    // 1. Поиск пользователя в БД
+    const user = await db('users').where({ email: normalizedEmail }).first();
     if (!user) {
+      // Намеренно не уточняем, что именно неверно (безопасность)
       return res.status(400).json({ status: 'error', message: 'Неверный email или пароль' });
     }
 
-    // Сравнение хэша пароля
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    // 2. Проверка пароля
+    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
     if (!isPasswordValid) {
       return res.status(400).json({ status: 'error', message: 'Неверный email или пароль' });
     }
 
-    // Генерация токенов
-    const accessToken = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-    const refreshToken = jwt.sign({ id: user.id, email: user.email }, JWT_REFRESH_SECRET, { expiresIn: REFRESH_EXPIRES_IN });
+    // 3. Генерация токенов
+    const tokenPayload = { id: user.id, email: user.email };
+    const accessToken = jwt.sign(tokenPayload, config.security.jwtSecret, { expiresIn: config.security.jwtExpiresIn });
+    const refreshToken = jwt.sign(tokenPayload, config.security.refreshSecret, { expiresIn: config.security.refreshExpiresIn });
 
-    refreshTokensDb.add(refreshToken);
+    activeRefreshTokens.add(refreshToken);
 
+    // 4. Успешный ответ (не отдаем password_hash!)
     res.json({
       status: 'success',
       accessToken,
@@ -165,13 +152,13 @@ router.post('/login', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[Auth Login Error]:', error);
-    res.status(500).json({ status: 'error', message: 'Внутренняя ошибка сервера' });
+    console.error('[Auth Login Error]:', error.message);
+    res.status(500).json({ status: 'error', message: 'Внутренняя ошибка сервера при входе' });
   }
 });
 
 // ==========================================
-// 3. ОБНОВЛЕНИЕ ТОКЕНА (REFRESH TOKEN)
+// 6. ОБНОВЛЕНИЕ ACCESS TOKENA (REFRESH)
 // ==========================================
 router.post('/refresh', (req, res) => {
   const { refreshToken } = req.body;
@@ -180,17 +167,23 @@ router.post('/refresh', (req, res) => {
     return res.status(401).json({ status: 'error', message: 'Refresh token не предоставлен' });
   }
 
-  if (!refreshTokensDb.has(refreshToken)) {
+  // Проверка наличия токена в нашем хранилище
+  if (!activeRefreshTokens.has(refreshToken)) {
     return res.status(403).json({ status: 'error', message: 'Недействительный refresh token' });
   }
 
-  jwt.verify(refreshToken, JWT_REFRESH_SECRET, (err, decoded) => {
+  jwt.verify(refreshToken, config.security.refreshSecret, (err, decoded) => {
     if (err) {
-      refreshTokensDb.delete(refreshToken);
+      activeRefreshTokens.delete(refreshToken); // Удаляем истекший/битый токен
       return res.status(403).json({ status: 'error', message: 'Истек срок действия refresh token' });
     }
 
-    const newAccessToken = jwt.sign({ id: decoded.id, email: decoded.email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    // Выпускаем новый access token
+    const newAccessToken = jwt.sign(
+      { id: decoded.id, email: decoded.email }, 
+      config.security.jwtSecret, 
+      { expiresIn: config.security.jwtExpiresIn }
+    );
 
     res.json({
       status: 'success',
@@ -200,38 +193,50 @@ router.post('/refresh', (req, res) => {
 });
 
 // ==========================================
-// 4. ТЕКУЩИЙ ПОЛЬЗОВАТЕЛЬ (ME)
+// 7. ТЕКУЩИЙ ПОЛЬЗОВАТЕЛЬ (ME)
 // ==========================================
-router.get('/me', authenticateToken, (req, res) => {
-  const user = Array.from(usersDb.values()).find(u => u.id === req.user.id);
+router.get('/me', authenticateToken, async (req, res) => {
+  try {
+    // req.user.id берется из расшифрованного JWT
+    const user = await db('users').where({ id: req.user.id }).first();
+    
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'Пользователь не найден' });
+    }
 
-  if (!user) {
-    return res.status(404).json({ status: 'error', message: 'Пользователь не найден' });
+    res.json({
+      status: 'success',
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        balance: user.balance,
+        currency: user.currency,
+        is_verified: user.is_verified,
+        created_at: user.created_at,
+      },
+    });
+  } catch (error) {
+    console.error('[Auth Me Error]:', error.message);
+    res.status(500).json({ status: 'error', message: 'Ошибка получения профиля' });
   }
-
-  res.json({
-    status: 'success',
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      balance: user.balance,
-      currency: user.currency,
-    },
-  });
 });
 
 // ==========================================
-// 5. ВЫХОД ИЗ СИСТЕМЫ (LOGOUT)
+// 8. ВЫХОД ИЗ СИСТЕМЫ (LOGOUT)
 // ==========================================
 router.post('/logout', (req, res) => {
   const { refreshToken } = req.body;
+  
   if (refreshToken) {
-    refreshTokensDb.delete(refreshToken);
+    activeRefreshTokens.delete(refreshToken);
   }
+  
   res.json({ status: 'success', message: 'Вы успешно вышли из системы' });
 });
 
+// ==========================================
+// ЭКСПОРТ
+// ==========================================
 module.exports = router;
-module.exports.authenticateToken = authenticateToken;
-module.exports.usersDb = usersDb;
+module.exports.authenticateToken = authenticateToken; // Экспортируем мидлвар для использования в других роутах
