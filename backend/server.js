@@ -1,12 +1,11 @@
 /**
- * backend/src/server.js
- * 
+ * backend/server.js
  * Главный серверный файл Express + WebSocket для платформы NovaTrade.
- * Обрабатывает REST API запросы, авторизацию, реальные котировки и автозакрытие сделок.
+ * Точка входа приложения: инициализация Express, WebSocket, REST API и симуляция котировок.
  */
-
 require('dotenv').config();
 const http = require('http');
+const crypto = require('crypto');
 const express = require('express');
 const WebSocket = require('ws');
 const cors = require('cors');
@@ -14,44 +13,47 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 
-const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'novatrade_super_secret_key_2026';
+// Импортируем наш централизованный конфиг
+const config = require('./config'); 
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server, path: '/ws' });
 
 // ==========================================
-// 1. MIDDLEWARES БЕЗОПАСНОСТИ И КОНФИГУРАЦИЯ
+// 1. MIDDLEWARES БЕЗОПАСНОСТИ И БАЗОВЫЕ НАСТРОЙКИ
 // ==========================================
-app.use(helmet());
+app.use(helmet()); // Базовые заголовки безопасности
 app.use(cors({
-  origin: process.env.CLIENT_URL || '*',
+  origin: config.security.corsOrigins,
   credentials: true,
 }));
-app.use(express.json());
+app.use(express.json({ limit: '10kb' })); // Ограничение размера JSON body
 
-// Ограничение количества запросов (Rate Limiting)
+// Rate Limiting (Защита от флуда)
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 минут
-  max: 300, // максимум 300 запросов с одного IP
+  windowMs: config.rateLimit.windowMs,
+  max: config.rateLimit.maxRequests,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: { status: 'error', message: 'Слишком много запросов, повторите позже.' },
 });
 app.use('/v1/', limiter);
 
 // ==========================================
-// 2. ИМИТАЦИЯ БАЗЫ ДАННЫХ (IN-MEMORY STATE)
+// 2. ИМИТАЦИЯ БАЗЫ ДАННЫХ (IN-MEMORY STATE ДЛЯ MVP)
 // ==========================================
+// Примечание: В продакшене users и trades будут в PostgreSQL (Knex).
+// Assets оставлены в памяти для быстрого обновления симулятором котировок.
 const db = {
   users: new Map([
     ['user@novatrade.io', {
-      id: 'usr_demo123',
+      id: crypto.randomUUID(),
       email: 'user@novatrade.io',
-      passwordHash: '$2a$10$e8..', // демо хэш
+      passwordHash: '$2a$10$e8..', // Демо хэш (в реальности bcrypt)
       name: 'Alex Trader',
-      balance: 10000.00,
+      balance: config.trading.defaultDemoBalance,
       currency: 'USD',
-      verified: true,
+      isVerified: true,
     }]
   ]),
   assets: [
@@ -64,6 +66,9 @@ const db = {
   tradeHistory: [],
 };
 
+// Маппинг для WebSocket: userId -> Set<WebSocket>
+const userSockets = new Map();
+
 // ==========================================
 // 3. REST API ЭНДПОИНТЫ
 // ==========================================
@@ -71,33 +76,38 @@ const db = {
 // Мидлвар проверки JWT
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  
   if (!token) {
     return res.status(401).json({ message: 'Токен авторизации отсутствует' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(401).json({ message: 'Недействительный токен' });
+  jwt.verify(token, config.security.jwtSecret, (err, user) => {
+    if (err) return res.status(403).json({ message: 'Недействительный или истекший токен' });
     req.user = user;
     next();
   });
 };
 
-// 3.1 Вход пользователя
+// 3.1 Вход пользователя (Упрощенный для демо)
 app.post('/v1/auth/login', (req, res) => {
   const { email, password } = req.body;
   const user = db.users.get(email);
-
+  
+  // В реальности здесь bcrypt.compare(password, user.passwordHash)
   if (!user) {
     return res.status(400).json({ message: 'Неверный email или пароль' });
   }
 
-  const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
+  const accessToken = jwt.sign(
+    { id: user.id, email: user.email }, 
+    config.security.jwtSecret, 
+    { expiresIn: config.security.jwtExpiresIn }
+  );
 
   return res.json({
-    accessToken: token,
-    refreshToken: 'ref_' + Math.random().toString(36).substr(2),
+    accessToken,
+    refreshToken: 'ref_' + crypto.randomUUID(), // Заглушка для refresh token
     user: {
       id: user.id,
       email: user.email,
@@ -108,11 +118,11 @@ app.post('/v1/auth/login', (req, res) => {
   });
 });
 
-// 3.2 Проверка текущего пользователя и баланса
+// 3.2 Проверка текущего пользователя
 app.get('/v1/auth/me', authenticateToken, (req, res) => {
   const user = Array.from(db.users.values()).find(u => u.id === req.user.id);
   if (!user) return res.status(404).json({ message: 'Пользователь не найден' });
-
+  
   res.json({
     id: user.id,
     email: user.email,
@@ -131,20 +141,24 @@ app.get('/v1/trading/assets', authenticateToken, (req, res) => {
 app.post('/v1/trading/trades', authenticateToken, (req, res) => {
   const { assetId, direction, amount, durationSec } = req.body;
   const user = Array.from(db.users.values()).find(u => u.id === req.user.id);
-
-  if (!user || user.balance < amount) {
+  
+  if (!user) return res.status(404).json({ message: 'Пользователь не найден' });
+  if (user.balance < amount) {
     return res.status(400).json({ message: 'Недостаточно средств на балансе' });
   }
-
+  
   const asset = db.assets.find(a => a.id === assetId);
-  if (!asset) {
-    return res.status(400).json({ message: 'Актив не найден' });
+  if (!asset) return res.status(400).json({ message: 'Актив не найден' });
+
+  // Валидация суммы сделки
+  if (amount < config.trading.minBetAmount || amount > config.trading.maxBetAmount) {
+    return res.status(400).json({ message: `Сумма сделки должна быть от ${config.trading.minBetAmount} до ${config.trading.maxBetAmount}` });
   }
 
   // Списываем баланс
   user.balance -= Number(amount);
 
-  const tradeId = 'trd_' + Math.random().toString(36).substr(2, 9);
+  const tradeId = crypto.randomUUID();
   const now = Date.now();
   const expireAt = now + (durationSec || 60) * 1000;
 
@@ -152,7 +166,7 @@ app.post('/v1/trading/trades', authenticateToken, (req, res) => {
     id: tradeId,
     userId: user.id,
     assetId: asset.id,
-    direction: direction.toUpperCase(), // 'UP' или 'DOWN'
+    direction: direction.toUpperCase(),
     entryPrice: asset.price,
     amount: Number(amount),
     payout: asset.payout,
@@ -163,10 +177,10 @@ app.post('/v1/trading/trades', authenticateToken, (req, res) => {
 
   db.activeTrades.set(tradeId, newTrade);
 
-  // Запуск таймера закрытия сделки
+  // Запуск таймера закрытия сделки (В продакшене это должна делать очередь типа BullMQ/Redis)
   setTimeout(() => closeTrade(tradeId), (durationSec || 60) * 1000);
 
-  // Оповещаем клиента об обновлении баланса
+  // Оповещаем клиента об обновлении баланса через WS
   broadcastToUser(user.id, 'balance_update', { balance: user.balance });
 
   res.json({ success: true, trade: newTrade });
@@ -175,47 +189,55 @@ app.post('/v1/trading/trades', authenticateToken, (req, res) => {
 // ==========================================
 // 4. WEBSOCKET УПРАВЛЕНИЕ И LIVE-КОТИРОВКИ
 // ==========================================
-
-const clients = new Set();
+const wss = new WebSocket.Server({ server, path: config.websocket.path });
 
 wss.on('connection', (ws, req) => {
-  clients.add(ws);
   ws.isAlive = true;
-
+  
+  // В реальном приложении здесь будет авторизация WS по токену из query-параметра
+  // Пока что просто добавляем в общий список
   ws.on('pong', () => { ws.isAlive = true; });
-
+  
   ws.on('message', (message) => {
     try {
       const parsed = JSON.parse(message);
       if (parsed.type === 'ping') {
         ws.send(JSON.stringify({ type: 'pong' }));
       }
+      // Здесь можно обработать подписку на конкретные активы
     } catch (err) {
-      console.error('[WS Error] Ошибка обработки сообщения:', err);
+      console.error('[WS Error] Ошибка обработки сообщения:', err.message);
     }
   });
 
   ws.on('close', () => {
-    clients.delete(ws);
+    // Удаляем сокет из маппинга пользователя при отключении
+    for (const [userId, sockets] of userSockets.entries()) {
+      if (sockets.has(ws)) {
+        sockets.delete(ws);
+        if (sockets.size === 0) userSockets.delete(userId);
+        break;
+      }
+    }
   });
 });
 
-// Пингование всех подключений каждые 30 секунд
+// Пингование всех подключений (Heartbeat)
 setInterval(() => {
   wss.clients.forEach((ws) => {
     if (!ws.isAlive) return ws.terminate();
     ws.isAlive = false;
     ws.ping();
   });
-}, 30000);
+}, config.websocket.pingIntervalMs);
 
 // Генератор движения цен (Тиковая симуляция котировок)
 setInterval(() => {
   db.assets.forEach((asset) => {
-    const delta = (Math.random() - 0.49) * (asset.price * 0.0008);
+    // Случайное блуждание цены с учетом волатильности из конфига
+    const delta = (Math.random() - 0.49) * (asset.price * config.websocket.volatilityFactor);
     asset.price = parseFloat((asset.price + delta).toFixed(5));
 
-    // Отправляем новую цену всем подключенным вебсокет-клиентам
     const updatePayload = JSON.stringify({
       type: 'quote_update',
       payload: {
@@ -225,15 +247,18 @@ setInterval(() => {
       }
     });
 
-    clients.forEach((client) => {
+    // Отправляем новую цену всем подключенным вебсокет-клиентам
+    wss.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(updatePayload);
       }
     });
   });
-}, 1000);
+}, config.websocket.quoteTickRateMs);
 
-// Закрытие сделки и расчет профита
+// ==========================================
+// 5. ЛОГИКА ЗАКРЫТИЯ СДЕЛОК
+// ==========================================
 function closeTrade(tradeId) {
   const trade = db.activeTrades.get(tradeId);
   if (!trade) return;
@@ -248,9 +273,11 @@ function closeTrade(tradeId) {
 
   let profit = 0;
   if (isWin) {
+    // При выигрыше возвращаем тело депозита + профит
     profit = trade.amount + (trade.amount * (trade.payout / 100));
     if (user) user.balance += profit;
-  }
+  } 
+  // При проигрыше profit = 0 (ставка уже списана при открытии)
 
   trade.exitPrice = currentPrice;
   trade.closedAt = Date.now();
@@ -260,7 +287,7 @@ function closeTrade(tradeId) {
   db.activeTrades.delete(tradeId);
   db.tradeHistory.unshift(trade);
 
-  // Уведомление через WS о закрытии сделки
+  // Уведомление через WS ТОЛЬКО конкретному пользователю
   if (user) {
     broadcastToUser(user.id, 'trade_closed', {
       trade,
@@ -269,21 +296,44 @@ function closeTrade(tradeId) {
   }
 }
 
+// Функция отправки сообщения конкретному пользователю
 function broadcastToUser(userId, type, payload) {
   const data = JSON.stringify({ type, payload });
-  clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(data);
-    }
-  });
+  const userSocketsSet = userSockets.get(userId);
+  
+  if (userSocketsSet) {
+    userSocketsSet.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(data);
+      }
+    });
+  }
 }
 
 // ==========================================
-// 5. ЗАПУСК СЕРВЕРА
+// 6. ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ОШИБОК
 // ==========================================
-server.listen(PORT, () => {
+// Обработка 404
+app.use((req, res) => {
+  res.status(404).json({ status: 'error', message: 'Маршрут не найден' });
+});
+
+// Глобальный обработчик ошибок Express
+app.use((err, req, res, next) => {
+  console.error(`[SERVER ERROR] ${err.message}`, err.stack);
+  res.status(err.status || 500).json({
+    status: 'error',
+    message: config.isProduction ? 'Внутренняя ошибка сервера' : err.message,
+  });
+});
+
+// ==========================================
+// 7. ЗАПУСК СЕРВЕРА
+// ==========================================
+server.listen(config.port, () => {
   console.log(`=================================`);
-  console.log(`🚀 NovaTrade API запущен на порту: ${PORT}`);
-  console.log(`📡 WebSocket URL: ws://localhost:${PORT}/ws`);
+  console.log(`🚀 NovaTrade API запущен на порту: ${config.port}`);
+  console.log(`🌍 Окружение: ${config.env}`);
+  console.log(`📡 WebSocket URL: ws://localhost:${config.port}${config.websocket.path}`);
   console.log(`=================================`);
 });
