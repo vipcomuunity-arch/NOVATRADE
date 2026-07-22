@@ -1,89 +1,560 @@
-/* frontend/styles/terminal.css */
+/**
+ * frontend/styles/terminal.css
+ * Стили для главной страницы торгового терминала (Dashboard).
+ * Темная тема, адаптивная сетка, кастомные скроллбары.
+ */
 
+/* ==========================================
+   1. ОСНОВНОЙ КОНТЕЙНЕР И ВЕРХНЯЯ ПАНЕЛЬ
+   ========================================== */
 .dashboard-container {
-  display: flex; flex-direction: column; gap: 16px; color: #F8FAFC; width: 100%; box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: #F8FAFC;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0;
 }
-.dashboard-loading { padding: 2rem; color: #fff; text-align: center; font-size: 1.2rem; }
 
-.top-summary-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
-.balance-card, .asset-selector-card, .mini-stats-card {
-  background-color: #1E293B; border: 1px solid #334155; border-radius: 12px; padding: 14px 18px;
+.dashboard-loading {
+  padding: 2rem;
+  color: #fff;
+  text-align: center;
+  font-size: 1.2rem;
 }
-.balance-header, .asset-info, .asset-price-block { display: flex; align-items: center; gap: 8px; }
-.balance-label { font-size: 12px; color: #94A3B8; font-weight: 600; }
-.account-badge { margin-left: auto; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 4px; }
-.account-badge.demo { background: rgba(245, 158, 11, 0.15); color: #F59E0B; }
-.balance-amount { font-size: 22px; font-weight: 800; margin-top: 6px; }
-.asset-name { font-weight: 700; font-size: 15px; }
-.asset-payout { font-size: 11px; color: #10B981; font-weight: 700; }
-.asset-price { font-weight: 700; font-size: 15px; text-align: right; }
-.asset-selector-card { cursor: pointer; justify-content: space-between; }
-.mini-stats-card { display: flex; justify-content: space-around; align-items: center; }
-.mini-stat-item { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.mini-stat-label { font-size: 11px; color: #64748B; font-weight: 600; }
-.mini-stat-val { font-size: 16px; font-weight: 800; }
-.mini-stat-val.profit { color: #10B981; }
 
-.main-grid { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: stretch; }
-.chart-section, .trade-panel {
-  background-color: #1E293B; border: 1px solid #334155; border-radius: 12px; padding: 16px;
-  display: flex; flex-direction: column; gap: 12px;
+.top-summary-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
 }
-.chart-section { min-height: 420px; }
-.chart-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 10px; }
-.chart-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; }
-.chart-area { flex: 1; background-color: #0F172A; border-radius: 8px; border: 1px solid #334155; position: relative; padding: 10px; overflow: hidden; }
+
+.balance-card, 
+.asset-selector-card, 
+.mini-stats-card {
+  background-color: #1E293B;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 14px 18px;
+  transition: border-color 0.2s ease;
+}
+
+.balance-card:hover, 
+.asset-selector-card:hover {
+  border-color: #475569;
+}
+
+.balance-header, 
+.asset-info, 
+.asset-price-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.balance-label {
+  font-size: 12px;
+  color: #94A3B8;
+  font-weight: 600;
+}
+
+.account-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.account-badge.demo {
+  background: rgba(245, 158, 11, 0.15);
+  color: #F59E0B;
+}
+
+.balance-amount {
+  font-size: 22px;
+  font-weight: 800;
+  margin-top: 6px;
+  letter-spacing: -0.5px;
+}
+
+.asset-name {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.asset-payout {
+  font-size: 11px;
+  color: #10B981;
+  font-weight: 700;
+}
+
+.asset-price {
+  font-weight: 700;
+  font-size: 15px;
+  text-align: right;
+}
+
+.asset-selector-card {
+  cursor: pointer;
+  justify-content: space-between;
+}
+
+.mini-stats-card {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.mini-stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.mini-stat-label {
+  font-size: 11px;
+  color: #64748B;
+  font-weight: 600;
+}
+
+.mini-stat-val {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.mini-stat-val.profit {
+  color: #10B981;
+}
+
+/* ==========================================
+   2. ОСНОВНАЯ СЕТКА: ГРАФИК И ПАНЕЛЬ СДЕЛОК
+   ========================================== */
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 16px;
+  align-items: stretch;
+}
+
+/* Адаптивность: на планшетах и мобильных ставим всё в одну колонку */
+@media (max-width: 1024px) {
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+  .chart-section {
+    min-height: 300px;
+  }
+}
+
+.chart-section, 
+.trade-panel {
+  background-color: #1E293B;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chart-section {
+  min-height: 420px;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #334155;
+  padding-bottom: 10px;
+}
+
+.chart-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.chart-area {
+  flex: 1;
+  background-color: #0F172A;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  position: relative;
+  padding: 10px;
+  overflow: hidden;
+  /* Важно для Chart.js, чтобы он не вылезал за рамки */
+  display: flex; 
+  align-items: center;
+  justify-content: center;
+}
+
 .live-price-tag {
-  position: absolute; top: 16px; right: 16px; z-index: 10;
-  background: rgba(59, 130, 246, 0.2); border: 1px solid #3B82F6; border-radius: 20px;
-  padding: 4px 12px; font-size: 12px; font-weight: 700; color: #3B82F6; display: flex; align-items: center; gap: 6px;
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 10;
+  background: rgba(59, 130, 246, 0.2);
+  border: 1px solid #3B82F6;
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #3B82F6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  backdrop-filter: blur(4px);
 }
-.pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: #3B82F6; animation: pulse 2s infinite; }
-@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
 
-.panel-title { font-size: 16px; font-weight: 800; margin: 0; }
-.input-section { display: flex; flex-direction: column; gap: 8px; }
-.input-label { font-size: 12px; font-weight: 600; color: #94A3B8; display: flex; align-items: center; gap: 6px; }
-.duration-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3B82F6;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* ==========================================
+   3. ТОРГОВАЯ ПАНЕЛЬ (ФОРМА СДЕЛКИ)
+   ========================================== */
+.panel-title {
+  font-size: 16px;
+  font-weight: 800;
+  margin: 0;
+}
+
+.input-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #94A3B8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.duration-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
 .duration-btn {
-  background: #0F172A; border: 1px solid #334155; border-radius: 6px; padding: 8px;
-  color: #94A3B8; font-weight: 700; font-size: 12px; cursor: pointer; transition: all 0.2s;
+  background: #0F172A;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 8px;
+  color: #94A3B8;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
-.duration-btn.active, .duration-btn:hover { background: #3B82F6; border-color: #3B82F6; color: #FFF; }
-.amount-input-wrapper {
-  background: #0F172A; border: 1px solid #334155; border-radius: 8px; padding: 8px 12px; display: flex; align-items: center; gap: 6px;
-}
-.amount-input { width: 100%; background: transparent; border: none; outline: none; color: #FFF; font-weight: 800; font-size: 16px; }
-.currency-sign { color: #64748B; font-weight: 700; }
-.quick-amount-row { display: flex; gap: 6px; }
-.quick-btn { flex: 1; background: #0F172A; border: 1px solid #334155; border-radius: 6px; padding: 4px; color: #94A3B8; font-size: 11px; font-weight: 600; cursor: pointer; }
-.payout-card { background: #0F172A; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; }
-.payout-label { color: #94A3B8; font-size: 12px; }
-.payout-value { color: #10B981; font-weight: 800; font-size: 13px; }
-.action-buttons-group { display: flex; flex-direction: column; gap: 10px; margin-top: auto; }
-.btn-trade {
-  border: none; border-radius: 10px; padding: 14px; color: #FFF; cursor: pointer;
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  font-size: 16px; font-weight: 900; letter-spacing: 0.5px; transition: transform 0.1s;
-}
-.btn-trade:active { transform: scale(0.98); }
-.btn-up { background: #10B981; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3); }
-.btn-down { background: #EF4444; box-shadow: 0 4px 14px rgba(239, 68, 68, 0.3); }
 
-.active-trades-section { background: #1E293B; border: 1px solid #334155; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-.active-trades-header { display: flex; align-items: center; justify-content: space-between; }
-.trades-title { display: flex; align-items: center; gap: 8px; }
-.trades-title h3 { margin: 0; font-size: 15px; font-weight: 700; }
-.active-count-badge { background: #334155; color: #FFF; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
-.empty-trades { text-align: center; padding: 20px; color: #64748B; font-size: 13px; }
-.trades-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
-.trade-card { background: #0F172A; border: 1px solid #334155; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.trade-card-header { display: flex; justify-content: space-between; align-items: center; }
-.trade-asset { font-weight: 700; font-size: 14px; }
-.direction-badge { font-size: 11px; font-weight: 800; padding: 2px 6px; border-radius: 4px; }
-.direction-badge.up { background: rgba(16, 185, 129, 0.15); color: #10B981; }
-.direction-badge.down { background: rgba(239, 68, 68, 0.15); color: #EF4444; }
-.trade-details { display: flex; justify-content: space-between; font-size: 12px; border-top: 1px solid #334155; padding-top: 8px; }
-.detail-label { color: #64748B; display: block; font-size: 10px; }
-.detail-value { font-weight: 700; }
-.detail-value.timer { color: #F59E0B; }
+.duration-btn:hover {
+  background: #1E293B;
+  color: #F8FAFC;
+  border-color: #475569;
+}
+
+.duration-btn.active {
+  background: #3B82F6;
+  border-color: #3B82F6;
+  color: #FFF;
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.3);
+}
+
+.amount-input-wrapper {
+  background: #0F172A;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: border-color 0.2s;
+}
+
+.amount-input-wrapper:focus-within {
+  border-color: #3B82F6;
+}
+
+.amount-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #FFF;
+  font-weight: 800;
+  font-size: 16px;
+}
+
+/* Убираем стрелки у input type="number" */
+.amount-input::-webkit-outer-spin-button,
+.amount-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.currency-sign {
+  color: #64748B;
+  font-weight: 700;
+}
+
+.quick-amount-row {
+  display: flex;
+  gap: 6px;
+}
+
+.quick-btn {
+  flex: 1;
+  background: #0F172A;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 6px 4px;
+  color: #94A3B8;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.quick-btn:hover {
+  background: #1E293B;
+  color: #F8FAFC;
+  border-color: #475569;
+}
+
+.quick-btn:active {
+  transform: scale(0.95);
+}
+
+.payout-card {
+  background: #0F172A;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.payout-label {
+  color: #94A3B8;
+  font-size: 12px;
+}
+
+.payout-value {
+  color: #10B981;
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.action-buttons-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.btn-trade {
+  border: none;
+  border-radius: 10px;
+  padding: 14px;
+  color: #FFF;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  transition: transform 0.1s, filter 0.2s;
+}
+
+.btn-trade:hover {
+  filter: brightness(1.1);
+}
+
+.btn-trade:active {
+  transform: scale(0.98);
+}
+
+.btn-up {
+  background: #10B981;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
+}
+
+.btn-down {
+  background: #EF4444;
+  box-shadow: 0 4px 14px rgba(239, 68, 68, 0.3);
+}
+
+/* ==========================================
+   4. СЕКЦИЯ АКТИВНЫХ СДЕЛОК
+   ========================================== */
+.active-trades-section {
+  background: #1E293B;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.active-trades-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.trades-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trades-title h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.active-count-badge {
+  background: #334155;
+  color: #FFF;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.empty-trades {
+  text-align: center;
+  padding: 20px;
+  color: #64748B;
+  font-size: 13px;
+}
+
+.trades-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.trade-card {
+  background: #0F172A;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.2s;
+}
+
+.trade-card:hover {
+  border-color: #475569;
+}
+
+.trade-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.trade-asset {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.direction-badge {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.direction-badge.up {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10B981;
+}
+
+.direction-badge.down {
+  background: rgba(239, 68, 68, 0.15);
+  color: #EF4444;
+}
+
+.trade-details {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  border-top: 1px solid #334155;
+  padding-top: 8px;
+}
+
+.detail-label {
+  color: #64748B;
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.detail-value {
+  font-weight: 700;
+  display: block;
+  margin-top: 2px;
+}
+
+.detail-value.timer {
+  color: #F59E0B;
+}
+
+/* ==========================================
+   5. КАСТОМНЫЕ СКРОЛЛБАРЫ (ТЕМНАЯ ТЕМА)
+   ========================================== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0F172A;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Для Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 #0F172A;
+}
