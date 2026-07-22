@@ -1,274 +1,342 @@
-
-import React, { useState } from 'react';
+/**
+ * frontend/pages/Dashboard.jsx
+ * Главная страница торгового терминала NovaTrade.
+ * Интегрирует реальный REST API, WebSocket для live-котировок, 
+ * интерактивный график (Chart.js) и панель управления сделками.
+ */
+import React, { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
 import {
-  TrendingUp,
-  TrendingDown,
-  Wallet,
-  DollarSign,
-  Clock,
-  ArrowUpRight,
-  ArrowDownRight,
-  Layers,
-  Activity,
-  ChevronDown,
-  RefreshCw,
-  Zap,
-  CheckCircle2,
-  AlertCircle
+  Chart as ChartJS, CategoryScale, LinearScale, PointElement,
+  LineElement, Title, Tooltip, Filler
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
+import {
+  Wallet, Layers, ChevronDown, Activity, Clock, DollarSign,
+  ArrowUpRight, ArrowDownRight, Zap
 } from 'lucide-react';
 
-export default function Dashboard({
-  onOpenAssetList,
-  selectedAsset = { id: 'btc', name: 'BTC / USD', price: 64250.00, change24h: 2.45, payout: 85 },
-  balance = 12450.00,
-  accountType = 'DEMO', // 'DEMO' | 'REAL'
-  onSwitchAccountType
-}) {
-  const [tradeAmount, setTradeAmount] = useState(100);
-  const [duration, setDuration] = useState('1m'); // '5s', '1m', '5m', '15m'
-  const [activeTrades, setActiveTrades] = useState([
-    { id: 't1', asset: 'BTC / USD', type: 'UP', amount: 100, entryPrice: 64180.00, timer: '00:42', payout: 85 },
-    { id: 't2', asset: 'ETH / USD', type: 'DOWN', amount: 250, entryPrice: 3482.10, timer: '01:15', payout: 82 },
-  ]);
+// Регистрация компонентов Chart.js
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Filler);
 
-  const handleQuickAmount = (val) => {
-    setTradeAmount(prev => Math.max(1, prev + val));
+// Маппинг UI-кнопок времени в секунды (для бэкенда)
+const DURATION_MAP = {
+  '5s': 5, '15s': 15, '1m': 60, '5m': 300, '15m': 900
+};
+
+export default function Dashboard() {
+  // --- Состояния данных ---
+  const [balance, setBalance] = useState(0);
+  const [assets, setAssets] = useState([]);
+  const [selectedAsset, setSelectedAsset] = useState(null);
+  const [activeTrades, setActiveTrades] = useState([]);
+  
+  // --- Состояния UI и формы ---
+  const [tradeAmount, setTradeAmount] = useState(100);
+  const [duration, setDuration] = useState('1m');
+  const [isLoading, setIsLoading] = useState(true);
+  const [isAssetMenuOpen, setIsAssetMenuOpen] = useState(false);
+
+  // --- Состояния Графика ---
+  const [priceHistory, setPriceHistory] = useState([]);
+  const [timeLabels, setTimeLabels] = useState([]);
+
+  const wsRef = useRef(null);
+
+  // ==========================================
+  // 1. ЗАГРУЗКА НАЧАЛЬНЫХ ДАННЫХ С БЭКА
+  // ==========================================
+  useEffect(() => {
+    const fetchInitialData = async () => {
+      try {
+        setIsLoading(true);
+        // Параллельные запросы к нашему реальному API
+        const [profileRes, assetsRes, tradesRes] = await Promise.all([
+          axios.get('/v1/auth/me'),
+          axios.get('/v1/trading/assets'),
+          axios.get('/v1/trading/trades/active')
+        ]);
+
+        setBalance(profileRes.data.user.balance);
+        
+        const loadedAssets = assetsRes.data.assets;
+        setAssets(loadedAssets);
+        if (loadedAssets.length > 0) {
+          const firstAsset = loadedAssets[0];
+          setSelectedAsset(firstAsset);
+          // Инициализируем график начальной ценой
+          setPriceHistory(Array(20).fill(firstAsset.price));
+          const now = new Date();
+          setTimeLabels(Array(20).fill(0).map((_, i) => 
+            new Date(now.getTime() - (19 - i) * 1000).toLocaleTimeString()
+          ));
+        }
+
+        setActiveTrades(tradesRes.data.trades);
+      } catch (err) {
+        console.error('Ошибка загрузки данных:', err);
+        // Если токен истек, можно редиректить на /login
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchInitialData();
+  }, []);
+
+  // ==========================================
+  // 2. ПОДКЛЮЧЕНИЕ К WEBSOCKET (LIVE-КОТИРОВКИ)
+  // ==========================================
+  useEffect(() => {
+    if (!selectedAsset) return;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        
+        if (msg.type === 'quote_update' && msg.payload.symbol === selectedAsset.id) {
+          const newPrice = msg.payload.price;
+          
+          // Обновляем цену в объекте актива
+          setSelectedAsset(prev => ({ ...prev, price: newPrice }));
+          
+          // Обновляем график
+          setPriceHistory(prev => [...prev.slice(1), newPrice]);
+          setTimeLabels(prev => [...prev.slice(1), new Date().toLocaleTimeString()]);
+        }
+        
+        if (msg.type === 'balance_update') {
+          setBalance(msg.payload.balance);
+        }
+
+        if (msg.type === 'trade_opened') {
+          setActiveTrades(prev => [msg.payload.trade, ...prev]);
+        }
+
+        if (msg.type === 'trade_closed') {
+          const closedTrade = msg.payload.trade;
+          setActiveTrades(prev => prev.filter(t => t.id !== closedTrade.id));
+          setBalance(msg.payload.newBalance);
+        }
+      } catch (err) {
+        console.error('WS parse error:', err);
+      }
+    };
+
+    ws.onclose = () => console.log('WS disconnected');
+    
+    return () => ws.close();
+  }, [selectedAsset?.id]); // Переподключаемся, если сменился актив (опционально)
+
+  // ==========================================
+  // 3. ТАЙМЕРЫ АКТИВНЫХ СДЕЛОК
+  // ==========================================
+  useEffect(() => {
+    if (activeTrades.length === 0) return;
+
+    const timerInterval = setInterval(() => {
+      setActiveTrades(prevTrades => 
+        prevTrades.map(trade => {
+          const remainingMs = trade.expire_at - Date.now();
+          if (remainingMs <= 0) return { ...trade, timer: '00:00' };
+          
+          const secs = Math.floor(remainingMs / 1000);
+          const mins = Math.floor(secs / 60);
+          const displaySecs = secs % 60;
+          return { ...trade, timer: `${String(mins).padStart(2, '0')}:${String(displaySecs).padStart(2, '0')}` };
+        })
+      );
+    }, 1000);
+
+    return () => clearInterval(timerInterval);
+  }, [activeTrades.length]);
+
+  // ==========================================
+  // 4. ОБРАБОТКА ОТКРЫТИЯ СДЕЛКИ
+  // ==========================================
+  const handlePlaceTrade = async (direction) => {
+    if (!selectedAsset || balance < tradeAmount) {
+      alert('Недостаточно средств или не выбран актив');
+      return;
+    }
+
+    try {
+      await axios.post('/v1/trading/trades', {
+        assetId: selectedAsset.id,
+        direction: direction, // 'UP' или 'DOWN'
+        amount: tradeAmount,
+        durationSec: DURATION_MAP[duration] || 60
+      });
+      
+      // Баланс и сделки обновятся автоматически через WebSocket
+    } catch (err) {
+      console.error('Ошибка открытия сделки:', err);
+      alert(err.response?.data?.message || 'Ошибка сервера');
+    }
   };
 
-  const handlePlaceTrade = (type) => {
-    const newTrade = {
-      id: `t-${Date.now()}`,
-      asset: selectedAsset.name,
-      type: type, // 'UP' | 'DOWN'
-      amount: Number(tradeAmount),
-      entryPrice: selectedAsset.price,
-      timer: duration === '5s' ? '00:05' : duration === '1m' ? '01:00' : '05:00',
-      payout: selectedAsset.payout
-    };
-    setActiveTrades([newTrade, ...activeTrades]);
+  const handleQuickAmount = (val) => setTradeAmount(prev => Math.max(1, prev + val));
+
+  // ==========================================
+  // 5. РЕНДЕРИНГ UI
+  // ==========================================
+  if (isLoading) return <div className="dashboard-loading">Загрузка терминала...</div>;
+  if (!selectedAsset) return <div className="dashboard-loading">Нет доступных активов</div>;
+
+  const isUp = priceHistory.length > 1 ? priceHistory[priceHistory.length - 1] >= priceHistory[priceHistory.length - 2] : true;
+  const potentialProfit = ((tradeAmount * selectedAsset.payout) / 100).toFixed(2);
+
+  // Конфигурация Chart.js
+  const chartData = {
+    labels: timeLabels,
+    datasets: [{
+      fill: true,
+      data: priceHistory,
+      borderColor: isUp ? '#10B981' : '#EF4444',
+      backgroundColor: isUp ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+      tension: 0.3,
+      borderWidth: 2,
+      pointRadius: 0,
+    }]
+  };
+
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+    scales: {
+      x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748B', maxTicksLimit: 6 } },
+      y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748B' } }
+    }
   };
 
   return (
-    <div style={styles.container}>
+    <div className="dashboard-container">
       {/* Верхний бар сводки */}
-      <div style={styles.topSummaryBar}>
-        {/* Выбор счета */}
-        <div style={styles.balanceCard}>
-          <div style={styles.balanceHeader}>
+      <div className="top-summary-bar">
+        <div className="balance-card">
+          <div className="balance-header">
             <Wallet size={16} color="#3B82F6" />
-            <span style={styles.balanceLabel}>Торговый счет</span>
-            <span style={{
-              ...styles.accountBadge,
-              backgroundColor: accountType === 'DEMO' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-              color: accountType === 'DEMO' ? '#F59E0B' : '#10B981'
-            }}>
-              {accountType}
-            </span>
+            <span className="balance-label">Торговый счет</span>
+            <span className="account-badge demo">DEMO</span>
           </div>
-          <div style={styles.balanceAmount}>
-            ${balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-          </div>
+          <div className="balance-amount">${balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
         </div>
 
-        {/* Выбранный актив */}
-        <div style={styles.assetSelectorCard} onClick={onOpenAssetList}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div className="asset-selector-card" onClick={() => setIsAssetMenuOpen(!isAssetMenuOpen)}>
+          <div className="asset-info">
             <Layers size={20} color="#3B82F6" />
             <div>
-              <div style={styles.assetName}>{selectedAsset.name}</div>
-              <div style={styles.assetPayout}>Выплата: +{selectedAsset.payout}%</div>
+              <div className="asset-name">{selectedAsset.name}</div>
+              <div className="asset-payout">Выплата: +{selectedAsset.payout}%</div>
             </div>
           </div>
-          <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div>
-              <div style={styles.assetPrice}>${selectedAsset.price.toLocaleString()}</div>
-              <div style={{
-                fontSize: '11px',
-                fontWeight: '700',
-                color: selectedAsset.change24h >= 0 ? '#10B981' : '#EF4444'
-              }}>
-                {selectedAsset.change24h >= 0 ? '+' : ''}{selectedAsset.change24h}%
-              </div>
-            </div>
+          <div className="asset-price-block">
+            <div className="asset-price">${selectedAsset.price.toLocaleString()}</div>
             <ChevronDown size={18} color="#64748B" />
           </div>
         </div>
 
-        {/* Статистика за сессию */}
-        <div style={styles.miniStatsCard}>
-          <div style={styles.miniStatItem}>
-            <span style={styles.miniStatLabel}>Активные сделки</span>
-            <span style={styles.miniStatVal}>{activeTrades.length}</span>
+        <div className="mini-stats-card">
+          <div className="mini-stat-item">
+            <span className="mini-stat-label">Активные сделки</span>
+            <span className="mini-stat-val">{activeTrades.length}</span>
           </div>
-          <div style={styles.miniStatItem}>
-            <span style={styles.miniStatLabel}>Профит за день</span>
-            <span style={{ ...styles.miniStatVal, color: '#10B981' }}>+$345.00</span>
+          <div className="mini-stat-item">
+            <span className="mini-stat-label">Потенциал</span>
+            <span className="mini-stat-val profit">+${potentialProfit}</span>
           </div>
         </div>
       </div>
 
-      {/* Основная сетка: График + Панель управления ордерами */}
-      <div style={styles.mainGrid}>
-        {/* Область графика (Плейсхолдер / Интеграция) */}
-        <div style={styles.chartSection}>
-          <div style={styles.chartHeader}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      {/* Основная сетка: График + Панель управления */}
+      <div className="main-grid">
+        <div className="chart-section">
+          <div className="chart-header">
+            <div className="chart-title">
               <Activity size={18} color="#3B82F6" />
-              <span style={{ fontWeight: '700', fontSize: '14px' }}>Котировки в реальном времени</span>
-            </div>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              {['1M', '5M', '15M', '1H'].map(tf => (
-                <span key={tf} style={styles.tfChip}>{tf}</span>
-              ))}
+              <span>Котировки в реальном времени</span>
             </div>
           </div>
-
-          {/* Визуальная имитация графика */}
-          <div style={styles.chartArea}>
-            <div style={styles.livePriceTag}>
-              <span style={styles.pulseDot} />
+          <div className="chart-area">
+            <div className="live-price-tag">
+              <span className="pulse-dot" />
               ${selectedAsset.price.toLocaleString()}
             </div>
-
-            <div style={styles.chartGridLines}>
-              <div style={styles.gridLine} />
-              <div style={styles.gridLine} />
-              <div style={styles.gridLine} />
-            </div>
-
-            <p style={styles.chartPlaceholderText}>
-              [ Область графика Canvas / TradingView ]
-            </p>
+            {/* Настоящий график Chart.js */}
+            <Line data={chartData} options={chartOptions} />
           </div>
         </div>
 
-        {/* Торговая панель (Панель ордеров) */}
-        <div style={styles.tradePanel}>
-          <h3 style={styles.panelTitle}>Открыть сделку</h3>
-
-          {/* Выбор времени экспирации */}
-          <div style={styles.inputSection}>
-            <label style={styles.inputLabel}>
-              <Clock size={14} color="#64748B" />
-              Время экспирации
-            </label>
-            <div style={styles.durationGrid}>
-              {['5s', '1m', '5m', '15m'].map(d => (
-                <button
-                  key={d}
-                  onClick={() => setDuration(d)}
-                  style={{
-                    ...styles.durationBtn,
-                    ...(duration === d ? styles.durationBtnActive : {})
-                  }}
-                >
-                  {d}
-                </button>
+        <div className="trade-panel">
+          <h3 className="panel-title">Открыть сделку</h3>
+          
+          <div className="input-section">
+            <label className="input-label"><Clock size={14} color="#64748B" /> Время экспирации</label>
+            <div className="duration-grid">
+              {Object.keys(DURATION_MAP).map(d => (
+                <button key={d} onClick={() => setDuration(d)} className={`duration-btn ${duration === d ? 'active' : ''}`}>{d}</button>
               ))}
             </div>
           </div>
 
-          {/* Поле суммы инвестиции */}
-          <div style={styles.inputSection}>
-            <label style={styles.inputLabel}>
-              <DollarSign size={14} color="#64748B" />
-              Сумма инвестиции
-            </label>
-            <div style={styles.amountInputWrapper}>
-              <span style={{ color: '#64748B', fontWeight: '700' }}>$</span>
-              <input
-                type="number"
-                value={tradeAmount}
-                onChange={(e) => setTradeAmount(Math.max(1, Number(e.target.value)))}
-                style={styles.amountInput}
-              />
+          <div className="input-section">
+            <label className="input-label"><DollarSign size={14} color="#64748B" /> Сумма инвестиции</label>
+            <div className="amount-input-wrapper">
+              <span className="currency-sign">$</span>
+              <input type="number" value={tradeAmount} onChange={(e) => setTradeAmount(Math.max(1, Number(e.target.value)))} className="amount-input" />
             </div>
-            <div style={styles.quickAmountRow}>
-              {[+10, +50, +100, +500].map(val => (
-                <button
-                  key={val}
-                  onClick={() => handleQuickAmount(val)}
-                  style={styles.quickBtn}
-                >
-                  +${val}
-                </button>
+            <div className="quick-amount-row">
+              {[10, 50, 100, 500].map(val => (
+                <button key={val} onClick={() => handleQuickAmount(val)} className="quick-btn">+${val}</button>
               ))}
             </div>
           </div>
 
-          {/* Расчёт потенциальной выплаты */}
-          <div style={styles.payoutCard}>
-            <span style={{ color: '#94A3B8', fontSize: '12px' }}>Чистая прибыль:</span>
-            <span style={styles.payoutValue}>
-              +${((tradeAmount * selectedAsset.payout) / 100).toFixed(2)} ({selectedAsset.payout}%)
-            </span>
+          <div className="payout-card">
+            <span className="payout-label">Чистая прибыль:</span>
+            <span className="payout-value">+${potentialProfit} ({selectedAsset.payout}%)</span>
           </div>
 
-          {/* Кнопки сделки ВЫШЕ / НИЖЕ */}
-          <div style={styles.actionButtonsGroup}>
-            <button
-              onClick={() => handlePlaceTrade('UP')}
-              style={styles.btnUp}
-            >
-              <div style={styles.btnContent}>
-                <ArrowUpRight size={22} />
-                <span style={styles.btnText}>ВЫШЕ</span>
-              </div>
+          <div className="action-buttons-group">
+            <button onClick={() => handlePlaceTrade('UP')} className="btn-trade btn-up">
+              <ArrowUpRight size={22} /> <span>ВЫШЕ</span>
             </button>
-
-            <button
-              onClick={() => handlePlaceTrade('DOWN')}
-              style={styles.btnDown}
-            >
-              <div style={styles.btnContent}>
-                <ArrowDownRight size={22} />
-                <span style={styles.btnText}>НИЖЕ</span>
-              </div>
+            <button onClick={() => handlePlaceTrade('DOWN')} className="btn-trade btn-down">
+              <ArrowDownRight size={22} /> <span>НИЖЕ</span>
             </button>
           </div>
         </div>
       </div>
 
       {/* Нижняя секция: Активные сделки */}
-      <div style={styles.activeTradesSection}>
-        <div style={styles.activeTradesHeader}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Zap size={18} color="#F59E0B" />
-            <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '700' }}>Открытые позиции</h3>
-          </div>
-          <span style={styles.activeCountBadge}>{activeTrades.length}</span>
+      <div className="active-trades-section">
+        <div className="active-trades-header">
+          <div className="trades-title"><Zap size={18} color="#F59E0B" /> <h3>Открытые позиции</h3></div>
+          <span className="active-count-badge">{activeTrades.length}</span>
         </div>
-
+        
         {activeTrades.length === 0 ? (
-          <div style={styles.emptyTrades}>Нет активных сделок на данный момент</div>
+          <div className="empty-trades">Нет активных сделок на данный момент</div>
         ) : (
-          <div style={styles.tradesGrid}>
+          <div className="trades-grid">
             {activeTrades.map(trade => (
-              <div key={trade.id} style={styles.tradeCard}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: '700', fontSize: '14px' }}>{trade.asset}</span>
-                  <span style={{
-                    ...styles.directionBadge,
-                    backgroundColor: trade.type === 'UP' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                    color: trade.type === 'UP' ? '#10B981' : '#EF4444'
-                  }}>
-                    {trade.type === 'UP' ? 'ВЫШЕ ▲' : 'НИЖЕ ▼'}
+              <div key={trade.id} className="trade-card">
+                <div className="trade-card-header">
+                  <span className="trade-asset">{trade.asset_id}</span>
+                  <span className={`direction-badge ${trade.direction === 'UP' ? 'up' : 'down'}`}>
+                    {trade.direction === 'UP' ? 'ВЫШЕ ▲' : 'НИЖЕ ▼'}
                   </span>
                 </div>
-
-                <div style={styles.tradeDetails}>
-                  <div>
-                    <span style={styles.detailLabel}>Инвестиция</span>
-                    <span style={styles.detailValue}>${trade.amount}</span>
-                  </div>
-                  <div>
-                    <span style={styles.detailLabel}>Вход</span>
-                    <span style={styles.detailValue}>${trade.entryPrice}</span>
-                  </div>
-                  <div>
-                    <span style={styles.detailLabel}>Таймер</span>
-                    <span style={{ ...styles.detailValue, color: '#F59E0B' }}>{trade.timer}</span>
-                  </div>
+                <div className="trade-details">
+                  <div><span className="detail-label">Инвестиция</span><span className="detail-value">${trade.amount}</span></div>
+                  <div><span className="detail-label">Вход</span><span className="detail-value">${trade.entry_price}</span></div>
+                  <div><span className="detail-label">Таймер</span><span className="detail-value timer">{trade.timer || '00:00'}</span></div>
                 </div>
               </div>
             ))}
@@ -278,376 +346,3 @@ export default function Dashboard({
     </div>
   );
 }
-
-// Стили
-const styles = {
-  container: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '16px',
-    color: '#F8FAFC',
-    width: '100%',
-    boxSizing: 'border-box'
-  },
-  topSummaryBar: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
-    gap: '12px'
-  },
-  balanceCard: {
-    backgroundColor: '#1E293B',
-    border: '1px solid #334155',
-    borderRadius: '12px',
-    padding: '14px 18px'
-  },
-  balanceHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    marginBottom: '6px'
-  },
-  balanceLabel: {
-    fontSize: '12px',
-    color: '#94A3B8',
-    fontWeight: '600'
-  },
-  accountBadge: {
-    marginLeft: 'auto',
-    fontSize: '10px',
-    fontWeight: '800',
-    padding: '2px 6px',
-    borderRadius: '4px'
-  },
-  balanceAmount: {
-    fontSize: '22px',
-    fontWeight: '800'
-  },
-  assetSelectorCard: {
-    backgroundColor: '#1E293B',
-    border: '1px solid #334155',
-    borderRadius: '12px',
-    padding: '14px 18px',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    cursor: 'pointer',
-    transition: 'border-color 0.2s',
-  },
-  assetName: {
-    fontWeight: '700',
-    fontSize: '15px'
-  },
-  assetPayout: {
-    fontSize: '11px',
-    color: '#10B981',
-    fontWeight: '700'
-  },
-  assetPrice: {
-    fontWeight: '700',
-    fontSize: '15px'
-  },
-  miniStatsCard: {
-    backgroundColor: '#1E293B',
-    border: '1px solid #334155',
-    borderRadius: '12px',
-    padding: '14px 18px',
-    display: 'flex',
-    justifyContent: 'space-around',
-    alignItems: 'center'
-  },
-  miniStatItem: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '4px'
-  },
-  miniStatLabel: {
-    fontSize: '11px',
-    color: '#64748B',
-    fontWeight: '600'
-  },
-  miniStatVal: {
-    fontSize: '16px',
-    fontWeight: '800'
-  },
-  mainGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 320px',
-    gap: '16px',
-    alignItems: 'stretch'
-  },
-  chartSection: {
-    backgroundColor: '#1E293B',
-    border: '1px solid #334155',
-    borderRadius: '12px',
-    padding: '16px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-    minHeight: '420px'
-  },
-  chartHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderBottom: '1px solid #334155',
-    paddingBottom: '10px'
-  },
-  tfChip: {
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
-    borderRadius: '4px',
-    padding: '2px 6px',
-    fontSize: '11px',
-    fontWeight: '600',
-    color: '#94A3B8'
-  },
-  chartArea: {
-    flex: 1,
-    backgroundColor: '#0F172A',
-    borderRadius: '8px',
-    border: '1px solid #334155',
-    position: 'relative',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden'
-  },
-  livePriceTag: {
-    position: 'absolute',
-    top: '16px',
-    right: '16px',
-    backgroundColor: 'rgba(59, 130, 246, 0.2)',
-    border: '1px solid #3B82F6',
-    borderRadius: '20px',
-    padding: '4px 12px',
-    fontSize: '12px',
-    fontWeight: '700',
-    color: '#3B82F6',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px'
-  },
-  pulseDot: {
-    width: '8px',
-    height: '8px',
-    borderRadius: '50%',
-    backgroundColor: '#3B82F6'
-  },
-  chartGridLines: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'space-between',
-    padding: '20px 0',
-    opacity: 0.2,
-    pointerEvents: 'none'
-  },
-  gridLine: {
-    borderTop: '1px dashed #64748B',
-    width: '100%'
-  },
-  chartPlaceholderText: {
-    color: '#64748B',
-    fontSize: '13px',
-    fontWeight: '600'
-  },
-  tradePanel: {
-    backgroundColor: '#1E293B',
-    border: '1px solid #334155',
-    borderRadius: '12px',
-    padding: '20px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '16px'
-  },
-  panelTitle: {
-    fontSize: '16px',
-    fontWeight: '800',
-    margin: 0
-  },
-  inputSection: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px'
-  },
-  inputLabel: {
-    fontSize: '12px',
-    fontWeight: '600',
-    color: '#94A3B8',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px'
-  },
-  durationGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
-    gap: '6px'
-  },
-  durationBtn: {
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
-    borderRadius: '6px',
-    padding: '8px',
-    color: '#94A3B8',
-    fontWeight: '700',
-    fontSize: '12px',
-    cursor: 'pointer'
-  },
-  durationBtnActive: {
-    backgroundColor: '#3B82F6',
-    borderColor: '#3B82F6',
-    color: '#FFF'
-  },
-  amountInputWrapper: {
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
-    borderRadius: '8px',
-    padding: '8px 12px',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px'
-  },
-  amountInput: {
-    width: '100%',
-    backgroundColor: 'transparent',
-    border: 'none',
-    outline: 'none',
-    color: '#FFF',
-    fontWeight: '800',
-    fontSize: '16px'
-  },
-  quickAmountRow: {
-    display: 'flex',
-    gap: '6px'
-  },
-  quickBtn: {
-    flex: 1,
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
-    borderRadius: '6px',
-    padding: '4px',
-    color: '#94A3B8',
-    fontSize: '11px',
-    fontWeight: '600',
-    cursor: 'pointer'
-  },
-  payoutCard: {
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
-    borderRadius: '8px',
-    padding: '10px 12px',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center'
-  },
-  payoutValue: {
-    color: '#10B981',
-    fontWeight: '800',
-    fontSize: '13px'
-  },
-  actionButtonsGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-    marginTop: 'auto'
-  },
-  btnUp: {
-    backgroundColor: '#10B981',
-    border: 'none',
-    borderRadius: '10px',
-    padding: '14px',
-    color: '#FFF',
-    cursor: 'pointer',
-    boxShadow: '0 4px 14px rgba(16, 185, 129, 0.3)',
-    transition: 'transform 0.1s'
-  },
-  btnDown: {
-    backgroundColor: '#EF4444',
-    border: 'none',
-    borderRadius: '10px',
-    padding: '14px',
-    color: '#FFF',
-    cursor: 'pointer',
-    boxShadow: '0 4px 14px rgba(239, 68, 68, 0.3)',
-    transition: 'transform 0.1s'
-  },
-  btnContent: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '8px'
-  },
-  btnText: {
-    fontSize: '16px',
-    fontWeight: '900',
-    letterSpacing: '0.5px'
-  },
-  activeTradesSection: {
-    backgroundColor: '#1E293B',
-    border: '1px solid #334155',
-    borderRadius: '12px',
-    padding: '16px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px'
-  },
-  activeTradesHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between'
-  },
-  activeCountBadge: {
-    backgroundColor: '#334155',
-    color: '#FFF',
-    fontSize: '12px',
-    fontWeight: '700',
-    padding: '2px 8px',
-    borderRadius: '10px'
-  },
-  emptyTrades: {
-    textAlign: 'center',
-    padding: '20px',
-    color: '#64748B',
-    fontSize: '13px'
-  },
-  tradesGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-    gap: '10px'
-  },
-  tradeCard: {
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
-    borderRadius: '8px',
-    padding: '12px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px'
-  },
-  directionBadge: {
-    fontSize: '11px',
-    fontWeight: '800',
-    padding: '2px 6px',
-    borderRadius: '4px'
-  },
-  tradeDetails: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    fontSize: '12px',
-    borderTop: '1px solid #334155',
-    paddingTop: '8px'
-  },
-  detailLabel: {
-    color: '#64748B',
-    display: 'block',
-    fontSize: '10px'
-  },
-  detailValue: {
-    fontWeight: '700'
-  }
-};
