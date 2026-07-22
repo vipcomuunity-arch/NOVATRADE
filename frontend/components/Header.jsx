@@ -1,198 +1,186 @@
+/**
+ * frontend/services/socket.js
+ * Сервис WebSocket-соединения для получения рыночных котировок в реальном времени,
+ * обновлений баланса и результатов сделок от бэкенда NovaTrade.
+ * Реализует паттерн Singleton, автопереподключение и Heartbeat.
+ */
+import authService from './auth';
 
-import React from 'react';
-import {
-  Activity,
-  Wallet,
-  User,
-  Bell,
-  PlusCircle,
-  ChevronDown
-} from 'lucide-react';
+// ==========================================
+// 1. ОПРЕДЕЛЕНИЕ URL WEBSOCKET
+// ==========================================
+const getWsUrl = () => {
+  // Если задан явный URL в .env (например, для продакшена)
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL;
+  }
+  
+  // В dev-режиме Vite proxy сам обработает путь /ws
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+};
 
-export default function Header({ 
-  balance = 10000.00, 
-  isDemo = true, 
-  onDeposit 
-}) {
-  return (
-    <header style={styles.header}>
-      {/* Логотип и брендинг */}
-      <div style={styles.brandContainer}>
-        <div style={styles.logoBadge}>
-          <Activity size={24} color="#3B82F6" />
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <h1 style={styles.logoText}>Nova Trade</h1>
-          <span style={styles.subText}>TRADING PLATFORM</span>
-        </div>
-      </div>
+// ==========================================
+// 2. КЛАСС SOCKET SERVICE (SINGLETON)
+// ==========================================
+class SocketService {
+  constructor() {
+    this.ws = null;
+    this.listeners = new Map(); // event -> Set(callbacks)
+    this.isConnecting = false;
+    this.isConnected = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.reconnectDelay = 1000; 
+    this.pingInterval = null;
+  }
 
-      {/* Правая секция: Баланс, Уведомления, Профиль */}
-      <div style={styles.rightSection}>
-        {/* Карточка баланса */}
-        <div style={styles.balanceCard}>
-          <Wallet size={18} color="#10B981" />
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={styles.accountType}>
-              {isDemo ? 'Демо-счёт' : 'Реальный счёт'}
-            </span>
-            <span style={styles.balanceAmount}>
-              ${balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </span>
-          </div>
-        </div>
+  /**
+   * Инициализация WebSocket-соединения
+   */
+  connect() {
+    if (this.isConnected || this.isConnecting) return;
+    this.isConnecting = true;
 
-        {/* Кнопка пополнения */}
-        <button onClick={onDeposit} style={styles.depositButton}>
-          <PlusCircle size={16} />
-          <span>Пополнить</span>
-        </button>
+    const token = authService.getAccessToken();
+    // Передаём токен в query-параметре (бэкенд может использовать это для идентификации)
+    const url = token ? `${getWsUrl()}?token=${encodeURIComponent(token)}` : getWsUrl();
 
-        {/* Уведомления */}
-        <button style={styles.iconButton} title="Уведомления">
-          <Bell size={18} />
-          <span style={styles.notificationDot} />
-        </button>
+    try {
+      this.ws = new WebSocket(url);
+      this.ws.onopen = this.handleOpen.bind(this);
+      this.ws.onmessage = this.handleMessage.bind(this);
+      this.ws.onerror = this.handleError.bind(this);
+      this.ws.onclose = this.handleClose.bind(this);
+    } catch (error) {
+      console.error('[SocketService] Ошибка создания WebSocket:', error);
+      this.isConnecting = false;
+      this.scheduleReconnect();
+    }
+  }
 
-        {/* Профиль пользователя */}
-        <div style={styles.profileMenu}>
-          <div style={styles.avatar}>
-            <User size={18} color="#F8FAFC" />
-          </div>
-          <span style={styles.userName}>Трейдер</span>
-          <ChevronDown size={14} color="#94A3B8" />
-        </div>
-      </div>
-    </header>
-  );
+  handleOpen() {
+    console.log('[SocketService] Соединение установлено');
+    this.isConnected = true;
+    this.isConnecting = false;
+    this.reconnectAttempts = 0;
+    this.reconnectDelay = 1000;
+    this.startHeartbeat();
+    this.emit('connection_change', { connected: true });
+  }
+
+  handleMessage(event) {
+    try {
+      const message = JSON.parse(event.data);
+      const { type, payload } = message;
+
+      // Игнорируем служебные ответы на наш пинг
+      if (type === 'pong') return;
+
+      // Оповещаем всех подписчиков данного типа событий
+      this.emit(type, payload);
+    } catch (error) {
+      console.error('[SocketService] Ошибка парсинга сообщения:', error);
+    }
+  }
+
+  handleError(error) {
+    console.error('[SocketService] Ошибка WebSocket:', error);
+    this.emit('error', error);
+  }
+
+  handleClose(event) {
+    console.warn(`[SocketService] Соединение закрыто (код: ${event.code})`);
+    this.isConnected = false;
+    this.isConnecting = false;
+    this.stopHeartbeat();
+    this.emit('connection_change', { connected: false });
+
+    // Если закрытие не было преднамеренным (код 1000), пробуем переподключиться
+    if (event.code !== 1000) {
+      this.scheduleReconnect();
+    }
+  }
+
+  startHeartbeat() {
+    this.stopHeartbeat();
+    this.pingInterval = setInterval(() => {
+      if (this.isConnected) {
+        this.send('ping', {});
+      }
+    }, 30000); // каждые 30 секунд
+  }
+
+  stopHeartbeat() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+  }
+
+  scheduleReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error('[SocketService] Превышено максимальное число попыток переподключения');
+      return;
+    }
+    this.reconnectAttempts++;
+    // Экспоненциальная задержка (1с, 1.5с, 2.25с... до макс 30с)
+    const timeout = Math.min(this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts), 30000);
+    console.log(`[SocketService] Повторное подключение через ${(timeout / 1000).toFixed(1)} сек...`);
+    
+    setTimeout(() => {
+      this.connect();
+    }, timeout);
+  }
+
+  send(type, payload = {}) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type, payload }));
+    }
+  }
+
+  // ==========================================
+  // СИСТЕМА ПОДПИСОК (PUB/SUB)
+  // ==========================================
+  on(event, callback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event).add(callback);
+    
+    // Возвращаем функцию отписки для удобства использования в useEffect
+    return () => this.off(event, callback);
+  }
+
+  off(event, callback) {
+    if (this.listeners.has(event)) {
+      this.listeners.get(event).delete(callback);
+    }
+  }
+
+  emit(event, data) {
+    if (this.listeners.has(event)) {
+      this.listeners.get(event).forEach((callback) => {
+        try {
+          callback(data);
+        } catch (err) {
+          console.error(`[SocketService] Ошибка в обработчике '${event}':`, err);
+        }
+      });
+    }
+  }
+
+  disconnect() {
+    this.stopHeartbeat();
+    if (this.ws) {
+      this.ws.close(1000, 'Преднамеренное закрытие');
+      this.ws = null;
+    }
+    this.isConnected = false;
+    this.isConnecting = false;
+  }
 }
 
-// Стили компонента
-const styles = {
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px 24px',
-    backgroundColor: '#1E293B',
-    borderBottom: '1px solid #334155',
-    userSelect: 'none',
-  },
-  brandContainer: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    cursor: 'pointer',
-  },
-  logoBadge: {
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    padding: '8px',
-    borderRadius: '10px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    border: '1px solid rgba(59, 130, 246, 0.2)',
-  },
-  logoText: {
-    fontSize: '20px',
-    fontWeight: '800',
-    margin: 0,
-    background: 'linear-gradient(to right, #3B82F6, #60A5FA)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
-    letterSpacing: '-0.5px',
-  },
-  subText: {
-    fontSize: '9px',
-    fontWeight: '700',
-    color: '#64748B',
-    letterSpacing: '1px',
-    marginTop: '-2px',
-  },
-  rightSection: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '16px',
-  },
-  balanceCard: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-    backgroundColor: '#0F172A',
-    padding: '6px 14px',
-    borderRadius: '8px',
-    border: '1px solid #334155',
-  },
-  accountType: {
-    fontSize: '10px',
-    fontWeight: '600',
-    color: '#94A3B8',
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px',
-  },
-  balanceAmount: {
-    fontSize: '15px',
-    fontWeight: '700',
-    color: '#10B981',
-    lineHeight: '1.2',
-  },
-  depositButton: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    backgroundColor: '#10B981',
-    color: '#FFFFFF',
-    border: 'none',
-    padding: '8px 16px',
-    borderRadius: '8px',
-    fontWeight: '600',
-    fontSize: '13px',
-    cursor: 'pointer',
-    transition: 'background-color 0.2s',
-  },
-  iconButton: {
-    position: 'relative',
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
-    color: '#94A3B8',
-    padding: '8px',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  notificationDot: {
-    position: 'absolute',
-    top: '6px',
-    right: '6px',
-    width: '6px',
-    height: '6px',
-    backgroundColor: '#3B82F6',
-    borderRadius: '50%',
-  },
-  profileMenu: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '4px 8px',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    backgroundColor: '#0F172A',
-    border: '1px solid #334155',
-  },
-  avatar: {
-    width: '28px',
-    height: '28px',
-    borderRadius: '50%',
-    backgroundColor: '#334155',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  userName: {
-    fontSize: '13px',
-    fontWeight: '500',
-    color: '#E2E8F0',
-  }
-};
+// Экспортируем единственный экземпляр класса (Singleton)
+export const socketService = new SocketService();
+export default socketService;
