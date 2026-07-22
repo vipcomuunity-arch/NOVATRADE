@@ -1,179 +1,230 @@
 /**
  * backend/routes/trades.js
- * 
- * Маршруты для управления торговыми сделками (Binary Options):
- * - Открытие сделки (CALL / PUT)
- * - Получение списка активных сделок
- * - Получение истории закрытых сделок
+ * Маршруты для управления торговыми сделками (Binary Options).
+ * Использует транзакции БД для гарантии целостности баланса и EventEmitter 
+ * для безопасной отправки событий в WebSocket.
  */
-
 const express = require('express');
 const router = express.Router();
-const { authenticateToken, usersDb } = require('./auth');
+const knex = require('knex');
+const { EventEmitter } = require('events');
 
-const db = {
-  assets: [
-    { id: 'EURUSD', name: 'EUR / USD', category: 'Forex', price: 1.08500, payout: 85 },
-    { id: 'GBPUSD', name: 'GBP / USD', category: 'Forex', price: 1.26420, payout: 82 },
-    { id: 'BTCUSD', name: 'Bitcoin', category: 'Crypto', price: 67450.00, payout: 90 },
-    { id: 'ETHUSD', name: 'Ethereum', category: 'Crypto', price: 3520.50, payout: 88 },
-  ],
-  activeTrades: new Map(),
-  tradeHistory: [],
+const config = require('../config');
+const { authenticateToken } = require('./auth');
+
+// Инициализация БД и шины событий для WebSocket
+const db = knex(config.db);
+const tradeEvents = new EventEmitter();
+
+// Хелпер для отправки событий в WS (server.js будет слушать 'ws_send')
+const broadcastToUser = (userId, type, payload) => {
+  tradeEvents.emit('ws_send', { userId, type, payload });
 };
 
-let broadcastUserCallback = null;
-function setBroadcastCallback(fn) {
-  broadcastUserCallback = fn;
-}
+// ==========================================
+// 1. ОТКРЫТИЕ НОВОЙ СДЕЛКИ (CALL / PUT)
+// ==========================================
+router.post('/', authenticateToken, async (req, res) => {
+  // Используем транзакцию для гарантии атомарности (защита от race conditions)
+  await db.transaction(async (trx) => {
+    try {
+      const { assetId, direction, amount, durationSec } = req.body;
+      const userId = req.user.id;
 
-router.post('/', authenticateToken, (req, res) => {
-  try {
-    const { assetId, direction, amount, durationSec } = req.body;
-    const userId = req.user.id;
+      // 1. Базовая валидация
+      if (!assetId || !direction || !amount || !durationSec) {
+        return res.status(400).json({ status: 'error', message: 'Заполните все обязательные поля' });
+      }
 
-    if (!assetId || !direction || !amount || !durationSec) {
-      return res.status(400).json({ status: 'error', message: 'Заполните все обязательные поля' });
+      const normalizedDirection = direction.toUpperCase();
+      if (!['UP', 'DOWN', 'CALL', 'PUT'].includes(normalizedDirection)) {
+        return res.status(400).json({ status: 'error', message: 'Неверное направление сделки' });
+      }
+      const tradeDirection = (normalizedDirection === 'CALL') ? 'UP' : (normalizedDirection === 'PUT') ? 'DOWN' : normalizedDirection;
+
+      const numAmount = Number(amount);
+      const numDuration = Number(durationSec);
+
+      // 2. Валидация по глобальному конфигу
+      if (numAmount < config.trading.minBetAmount || numAmount > config.trading.maxBetAmount) {
+        return res.status(400).json({ 
+          status: 'error', 
+          message: `Сумма сделки должна быть от $${config.trading.minBetAmount} до $${config.trading.maxBetAmount}` 
+        });
+      }
+      if (!config.trading.allowedDurationsSec.includes(numDuration)) {
+        return res.status(400).json({ 
+          status: 'error', 
+          message: `Недопустимое время экспирации. Разрешено: ${config.trading.allowedDurationsSec.join(', ')} сек` 
+        });
+      }
+
+      // 3. Блокировка строки пользователя и проверка баланса (FOR UPDATE)
+      const user = await trx('users')
+        .where({ id: userId })
+        .select('id', 'balance')
+        .forUpdate() // Блокируем строку до конца транзакции
+        .first();
+
+      if (!user) {
+        return res.status(404).json({ status: 'error', message: 'Пользователь не найден' });
+      }
+      if (user.balance < numAmount) {
+        return res.status(400).json({ status: 'error', message: 'Недостаточно средств на балансе' });
+      }
+
+      // 4. Проверка актива (должен быть активен)
+      const asset = await trx('assets').where({ id: assetId, is_active: true }).first();
+      if (!asset) {
+        return res.status(400).json({ status: 'error', message: 'Актив не найден или торги по нему закрыты' });
+      }
+
+      // 5. Списываем баланс
+      await trx('users').where({ id: userId }).decrement('balance', numAmount);
+
+      // 6. Создаем сделку (ID генерируется в БД через gen_random_uuid())
+      const now = new Date();
+      const expireAt = new Date(now.getTime() + numDuration * 1000);
+
+      const [newTrade] = await trx('trades')
+        .insert({
+          user_id: userId,
+          asset_id: asset.id,
+          direction: tradeDirection,
+          entry_price: asset.price,
+          amount: numAmount,
+          payout: asset.payout,
+          status: 'ACTIVE',
+          expire_at: expireAt,
+        })
+        .returning('*');
+
+      // 7. Запуск таймера закрытия (MVP)
+      // TODO: В продакшене заменить на очередь (BullMQ/Redis) или cron, чтобы не терять сделки при рестарте
+      setTimeout(() => resolveTrade(newTrade.id), numDuration * 1000);
+
+      // 8. Уведомления через WebSocket
+      const updatedUser = await trx('users').where({ id: userId }).select('balance').first();
+      broadcastToUser(userId, 'balance_update', { balance: updatedUser.balance });
+      broadcastToUser(userId, 'trade_opened', { trade: newTrade });
+
+      res.status(201).json({
+        status: 'success',
+        message: 'Сделка успешно открыта',
+        trade: newTrade,
+        newBalance: updatedUser.balance,
+      });
+
+    } catch (error) {
+      console.error('[Open Trade Error]:', error.message);
+      // Транзакция автоматически откатится (rollback), если мы не вернули res до этого
+      if (!res.headersSent) {
+        res.status(500).json({ status: 'error', message: 'Внутренняя ошибка сервера при открытии сделки' });
+      }
     }
-
-    const normalizedDirection = direction.toUpperCase();
-    if (!['UP', 'DOWN', 'CALL', 'PUT'].includes(normalizedDirection)) {
-      return res.status(400).json({ status: 'error', message: 'Неверное направление сделки' });
-    }
-
-    const tradeDirection = (normalizedDirection === 'CALL') ? 'UP' : (normalizedDirection === 'PUT') ? 'DOWN' : normalizedDirection;
-    const numAmount = Number(amount);
-    const numDuration = Number(durationSec);
-
-    if (isNaN(numAmount) || numAmount <= 0 || isNaN(numDuration) || numDuration < 5) {
-      return res.status(400).json({ status: 'error', message: 'Некорректная сумма или время экспирации' });
-    }
-
-    const user = Array.from(usersDb.values()).find(u => u.id === userId);
-    if (!user) {
-      return res.status(404).json({ status: 'error', message: 'Пользователь не найден' });
-    }
-
-    if (user.balance < numAmount) {
-      return res.status(400).json({ status: 'error', message: 'Недостаточно средств на балансе' });
-    }
-
-    const asset = db.assets.find(a => a.id === assetId);
-    if (!asset) {
-      return res.status(400).json({ status: 'error', message: 'Торговый актив не найден' });
-    }
-
-    user.balance = Number((user.balance - numAmount).toFixed(2));
-    usersDb.set(user.email, user);
-
-    const tradeId = 'trd_' + Math.random().toString(36).substring(2, 11);
-    const now = Date.now();
-    const expireAt = now + (numDuration * 1000);
-
-    const newTrade = {
-      id: tradeId,
-      userId: user.id,
-      assetId: asset.id,
-      assetName: asset.name,
-      direction: tradeDirection,
-      entryPrice: asset.price,
-      amount: numAmount,
-      payout: asset.payout,
-      createdAt: now,
-      expireAt,
-      status: 'ACTIVE',
-    };
-
-    db.activeTrades.set(tradeId, newTrade);
-
-    setTimeout(() => {
-      resolveTrade(tradeId);
-    }, numDuration * 1000);
-
-    if (broadcastUserCallback) {
-      broadcastUserCallback(user.id, 'balance_update', { balance: user.balance });
-      broadcastUserCallback(user.id, 'trade_opened', { trade: newTrade });
-    }
-
-    res.status(201).json({
-      status: 'success',
-      message: 'Сделка успешно открыта',
-      trade: newTrade,
-      newBalance: user.balance,
-    });
-  } catch (error) {
-    console.error('[Open Trade Error]:', error);
-    res.status(500).json({ status: 'error', message: 'Внутренняя ошибка сервера' });
-  }
+  });
 });
 
-router.get('/active', authenticateToken, (req, res) => {
+// ==========================================
+// 2. ПОЛУЧЕНИЕ АКТИВНЫХ СДЕЛОК
+// ==========================================
+router.get('/active', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const userActiveTrades = [];
-    db.activeTrades.forEach((trade) => {
-      if (trade.userId === userId) userActiveTrades.push(trade);
-    });
-    res.json({ status: 'success', trades: userActiveTrades });
+    const activeTrades = await db('trades')
+      .where({ user_id: req.user.id, status: 'ACTIVE' })
+      .orderBy('created_at', 'desc');
+
+    res.json({ status: 'success', trades: activeTrades });
   } catch (error) {
+    console.error('[Get Active Trades Error]:', error.message);
     res.status(500).json({ status: 'error', message: 'Ошибка при получении активных сделок' });
   }
 });
 
-router.get('/history', authenticateToken, (req, res) => {
+// ==========================================
+// 3. ПОЛУЧЕНИЕ ИСТОРИИ СДЕЛОК
+// ==========================================
+router.get('/history', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.id;
     const limit = parseInt(req.query.limit, 10) || 50;
-    const userHistory = db.tradeHistory.filter(t => t.userId === userId).slice(0, limit);
-    res.json({ status: 'success', trades: userHistory });
+    
+    const history = await db('trades')
+      .where({ user_id: req.user.id })
+      .whereIn('status', ['WIN', 'LOSS', 'DRAW'])
+      .orderBy('closed_at', 'desc')
+      .limit(limit);
+
+    res.json({ status: 'success', trades: history });
   } catch (error) {
+    console.error('[Get Trade History Error]:', error.message);
     res.status(500).json({ status: 'error', message: 'Ошибка при получении истории сделок' });
   }
 });
 
-function resolveTrade(tradeId) {
-  const trade = db.activeTrades.get(tradeId);
-  if (!trade) return;
+// ==========================================
+// 4. ЛОГИКА ЗАКРЫТИЯ СДЕЛКИ (RESOLVE)
+// ==========================================
+async function resolveTrade(tradeId) {
+  await db.transaction(async (trx) => {
+    try {
+      // 1. Получаем сделку и блокируем её
+      const trade = await trx('trades').where({ id: tradeId, status: 'ACTIVE' }).forUpdate().first();
+      if (!trade) return; // Уже закрыта или не найдена
 
-  const asset = db.assets.find(a => a.id === trade.assetId);
-  const currentPrice = asset ? asset.price : trade.entryPrice;
-  const user = Array.from(usersDb.values()).find(u => u.id === trade.userId);
+      // 2. Получаем текущую цену актива из БД
+      const asset = await trx('assets').where({ id: trade.asset_id }).first();
+      const currentPrice = asset ? asset.price : trade.entry_price;
 
-  let isWin = false;
-  if (trade.direction === 'UP' && currentPrice > trade.entryPrice) isWin = true;
-  if (trade.direction === 'DOWN' && currentPrice < trade.entryPrice) isWin = true;
+      // 3. Определяем результат
+      let status = 'LOSS';
+      let profit = 0;
 
-  let profit = 0;
-  if (isWin) {
-    profit = Number((trade.amount + (trade.amount * (trade.payout / 100))).toFixed(2));
-    if (user) {
-      user.balance = Number((user.balance + profit).toFixed(2));
-      usersDb.set(user.email, user);
+      if (currentPrice === trade.entry_price) {
+        status = 'DRAW';
+        profit = trade.amount; // Возврат тела депозита
+      } else {
+        const isWin = (trade.direction === 'UP' && currentPrice > trade.entry_price) ||
+                      (trade.direction === 'DOWN' && currentPrice < trade.entry_price);
+        
+        if (isWin) {
+          status = 'WIN';
+          profit = Number((trade.amount + (trade.amount * (trade.payout / 100))).toFixed(2));
+        }
+      }
+
+      // 4. Обновляем сделку
+      await trx('trades').where({ id: tradeId }).update({
+        status,
+        exit_price: currentPrice,
+        profit,
+        closed_at: new Date(),
+      });
+
+      // 5. Если WIN или DRAW, начисляем средства обратно на баланс
+      if (status === 'WIN' || status === 'DRAW') {
+        await trx('users').where({ id: trade.user_id }).increment('balance', profit);
+      }
+
+      // 6. Получаем новый баланс для уведомления
+      const updatedUser = await trx('users').where({ id: trade.user_id }).select('balance').first();
+      
+      const closedTrade = { ...trade, status, exit_price: currentPrice, profit, closed_at: new Date() };
+
+      // 7. Уведомляем клиента через WS
+      broadcastToUser(trade.user_id, 'trade_closed', {
+        trade: closedTrade,
+        newBalance: updatedUser.balance,
+      });
+
+    } catch (error) {
+      console.error(`[Resolve Trade ${tradeId} Error]:`, error.message);
     }
-  } else if (currentPrice === trade.entryPrice) {
-    profit = trade.amount;
-    if (user) {
-      user.balance = Number((user.balance + profit).toFixed(2));
-      usersDb.set(user.email, user);
-    }
-  }
-
-  trade.exitPrice = currentPrice;
-  trade.closedAt = Date.now();
-  trade.status = (currentPrice === trade.entryPrice) ? 'DRAW' : (isWin ? 'WIN' : 'LOSS');
-  trade.profit = profit;
-
-  db.activeTrades.delete(tradeId);
-  db.tradeHistory.unshift(trade);
-
-  if (user && broadcastUserCallback) {
-    broadcastUserCallback(user.id, 'trade_closed', {
-      trade,
-      newBalance: user.balance,
-    });
-  }
+  });
 }
 
+// ==========================================
+// ЭКСПОРТ
+// ==========================================
 module.exports = router;
-module.exports.db = db;
-module.exports.setBroadcastCallback = setBroadcastCallback;
+module.exports.tradeEvents = tradeEvents; // Экспортируем шину событий для server.js
+module.exports.resolveTrade = resolveTrade; // Экспортируем для возможного вызова из cron/worker
